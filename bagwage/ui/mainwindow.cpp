@@ -11,6 +11,7 @@
 #include "service/processservice.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
@@ -19,6 +20,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTableWidget>
@@ -42,6 +44,13 @@ MainWindow::MainWindow(QWidget *parent)
     , m_orderTable(new QTableWidget(this))
     , m_editOrderButton(0)
     , m_removeOrderButton(0)
+    , m_orderEmpFilterCombo(0)
+    , m_orderPageLabel(0)
+    , m_prevOrderPageButton(0)
+    , m_nextOrderPageButton(0)
+    , m_orderPage(0)
+    , m_orderEmpFilter(0)
+    , m_orderTotal(0)
 {
     setWindowTitle(QStringLiteral("书包生产记账系统 — bagwage"));
     resize(1000, 640);
@@ -262,20 +271,44 @@ QWidget *MainWindow::createOrderPage()
 
     QLabel *hint = new QLabel(
         QStringLiteral("订单 = 某个楼层生产某款书包的数量；明细才是「谁做了哪道工序」的计件记录。"
-                       "删除订单会连带删除它的全部明细。"),
+                       "列表按订单分页（每页 10 个订单），删除订单会连带删除它的全部明细。"),
         page);
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color:#777;"));
 
+    // 分页 / 筛选控制条
+    m_orderEmpFilterCombo = new QComboBox(page);
+    m_orderPageLabel = new QLabel(page);
+    m_prevOrderPageButton = new QPushButton(QStringLiteral("上一页"), page);
+    m_nextOrderPageButton = new QPushButton(QStringLiteral("下一页"), page);
+
+    QHBoxLayout *pager = new QHBoxLayout;
+    pager->addWidget(new QLabel(QStringLiteral("员工筛选："), page));
+    pager->addWidget(m_orderEmpFilterCombo);
+    pager->addSpacing(16);
+    pager->addWidget(m_prevOrderPageButton);
+    pager->addWidget(m_orderPageLabel);
+    pager->addWidget(m_nextOrderPageButton);
+    pager->addSpacing(8);
+    pager->addWidget(new QLabel(QStringLiteral("每页 10 个订单"), page));
+    pager->addStretch(1);
+
     QVBoxLayout *layout = new QVBoxLayout(page);
     layout->addLayout(buttons);
     layout->addWidget(hint);
+    layout->addLayout(pager);
     layout->addWidget(m_orderTable, 1);
 
     connect(addButton, SIGNAL(clicked()), this, SLOT(addOrder()));
     connect(m_editOrderButton, SIGNAL(clicked()), this, SLOT(editOrder()));
     connect(m_removeOrderButton, SIGNAL(clicked()), this, SLOT(removeOrder()));
     connect(refreshButton, SIGNAL(clicked()), this, SLOT(refreshOrders()));
+    connect(m_prevOrderPageButton, SIGNAL(clicked()), this, SLOT(goPrevOrderPage()));
+    connect(m_nextOrderPageButton, SIGNAL(clicked()), this, SLOT(goNextOrderPage()));
+    connect(m_orderEmpFilterCombo, SIGNAL(currentIndexChanged(int)),
+            this, SLOT(onOrderFilterChanged()));
+
+    populateOrderEmployeeFilter();
 
     return page;
 }
@@ -309,8 +342,12 @@ void MainWindow::refreshEmployees()
         m_employeeTable->selectRow(0);
 
     statusBar()->showMessage(QStringLiteral("员工共 %1 人").arg(employees.size()));
-    m_editButton->setEnabled(m_employeeTable->rowCount() > 0);
-    m_removeButton->setEnabled(m_employeeTable->rowCount() > 0);
+    const bool hasRows = m_employeeTable->rowCount() > 0;
+    m_editButton->setEnabled(hasRows);
+    m_removeButton->setEnabled(hasRows);
+
+    // 员工变了，订单页的筛选下拉也要跟着更新（保留当前选中项）
+    populateOrderEmployeeFilter();
 }
 
 int MainWindow::currentEmployeeRow() const
@@ -730,7 +767,23 @@ bool MainWindow::loadBagPriceMap(QList<Bag> *bags, QHash<int, QList<BagProcess> 
 void MainWindow::refreshOrders()
 {
     OrderService service;
-    const QList<OrderSummary> orders = service.listSummaries();
+    int total = 0;
+    const QList<OrderSummary> orders =
+        service.page(m_orderPage, kOrderPageSize, m_orderEmpFilter, &total);
+
+    // 删除或筛选后当前页可能越界：自动回到最后一页
+    if (orders.isEmpty() && m_orderPage > 0 && total > 0) {
+        --m_orderPage;
+        refreshOrders();
+        return;
+    }
+    if (orders.isEmpty() && m_orderPage > 0) {
+        m_orderPage = 0;
+        refreshOrders();
+        return;
+    }
+
+    m_orderTotal = total;
 
     m_orderTable->setRowCount(0);
     m_orderTable->setRowCount(orders.size());
@@ -768,6 +821,76 @@ void MainWindow::refreshOrders()
     const bool hasRows = m_orderTable->rowCount() > 0;
     m_editOrderButton->setEnabled(hasRows);
     m_removeOrderButton->setEnabled(hasRows);
+
+    updateOrderPageControls();
+}
+
+void MainWindow::populateOrderEmployeeFilter()
+{
+    if (!m_orderEmpFilterCombo)
+        return;
+
+    const int keep = m_orderEmpFilter;
+    QSignalBlocker blocker(m_orderEmpFilterCombo);
+
+    m_orderEmpFilterCombo->clear();
+    m_orderEmpFilterCombo->addItem(QStringLiteral("全部员工"), 0);
+
+    EmployeeService service;
+    const QList<Employee> employees = service.listAll();
+    for (int i = 0; i < employees.size(); ++i)
+        m_orderEmpFilterCombo->addItem(employees.at(i).name, employees.at(i).id);
+
+    const int index = m_orderEmpFilterCombo->findData(keep);
+    m_orderEmpFilterCombo->setCurrentIndex(index >= 0 ? index : 0);
+    m_orderEmpFilter = m_orderEmpFilterCombo->currentData().toInt();
+}
+
+void MainWindow::updateOrderPageControls()
+{
+    const int pages = m_orderTotal > 0
+        ? (m_orderTotal + kOrderPageSize - 1) / kOrderPageSize
+        : 0;
+
+    if (pages == 0) {
+        m_orderPageLabel->setText(QStringLiteral("暂无订单"));
+    } else {
+        m_orderPageLabel->setText(QStringLiteral("第 %1/%2 页（共 %3 个订单）")
+                                      .arg(m_orderPage + 1)
+                                      .arg(pages)
+                                      .arg(m_orderTotal));
+    }
+
+    m_prevOrderPageButton->setEnabled(m_orderPage > 0);
+    m_nextOrderPageButton->setEnabled(pages > 0 && m_orderPage + 1 < pages);
+}
+
+void MainWindow::onOrderFilterChanged()
+{
+    if (!m_orderEmpFilterCombo)
+        return;
+    m_orderEmpFilter = m_orderEmpFilterCombo->currentData().toInt();
+    m_orderPage = 0;
+    refreshOrders();
+}
+
+void MainWindow::goPrevOrderPage()
+{
+    if (m_orderPage <= 0)
+        return;
+    --m_orderPage;
+    refreshOrders();
+}
+
+void MainWindow::goNextOrderPage()
+{
+    const int pages = m_orderTotal > 0
+        ? (m_orderTotal + kOrderPageSize - 1) / kOrderPageSize
+        : 0;
+    if (m_orderPage + 1 >= pages)
+        return;
+    ++m_orderPage;
+    refreshOrders();
 }
 
 int MainWindow::currentOrderRow() const
@@ -826,6 +949,8 @@ void MainWindow::addOrder()
         return;
     }
 
+    // 新订单是最新的，跳到第 1 页让用户直接看到
+    m_orderPage = 0;
     refreshOrders();
     statusBar()->showMessage(QStringLiteral("已保存订单 #%1（%2 层）").arg(order.id).arg(order.floor),
                              5000);

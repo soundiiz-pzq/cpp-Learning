@@ -24,6 +24,13 @@ QList<OrderSummary> OrderService::listSummaries() const
     return dao.listSummaries();
 }
 
+QList<OrderSummary> OrderService::page(int pageIndex, int pageSize, int empFilter,
+                                       int *totalCount) const
+{
+    OrderDao dao;
+    return dao.pageSummaries(pageIndex, pageSize, empFilter, totalCount);
+}
+
 bool OrderService::load(int orderId, Order *order, QList<OrderDetail> *details)
 {
     OrderDao dao;

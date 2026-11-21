@@ -2,9 +2,9 @@
 
 Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 
-> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+批量明细）已完成。**
-> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细。
-> 未完成：订单分页、工资核算、图表、打包。
+> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+批量明细）、④（订单分页）已完成。**
+> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细、按订单维度分页与员工筛选。
+> 未完成：工资核算、图表、打包。
 
 ---
 
@@ -77,7 +77,7 @@ mingw32-make -j4
 **自检跑在临时库上**，跑完自动删除，绝不会往正式 `bagwage.db` 里插数据。
 默认用 `%TEMP%\bagwage_selftest_<pid>.db`；**如果临时目录里 SQLite 打不开库**
 （本机实测会报 `out of memory Error opening database`），会自动回退到程序目录建库、跑完删掉。
-当前共 85 项检查，期望最后一行 `===== 结果：PASS 85 / FAIL 0 =====`，退出码 0。
+当前共 97 项检查，期望最后一行 `===== 结果：PASS 97 / FAIL 0 =====`，退出码 0。
 
 想手工指定库文件路径（比如拿一份测试数据练手）：
 
@@ -135,7 +135,8 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 | 书包 × 工序 单价表 | ✅ 事务内整组替换，删掉的单价不会残留 | `service/bagservice.cpp` |
 | 订单 + 批量明细 | ✅ 事务写入；明细单价必须已配置 | `service/orderservice.cpp` |
 | 订单列表（含合计金额） | ✅ 合计取 `bag_process` 单价 | `dao/orderdao.cpp` |
-| 自检跑临时库 | ✅ 85 项（含界面回归） | `selftest.cpp` |
+| **订单维度分页 + 员工筛选** | ✅ 一页 10 个订单，换页/筛选不重复不漏 | `dao/orderdao.cpp` |
+| 自检跑临时库 | ✅ 97 项（含界面回归） | `selftest.cpp` |
 | 工资 / 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
 
 **工序删除的引用校验（阶段①重点）**：
@@ -154,21 +155,36 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
    （自检里用触发器强制失败验证过）。
 3. **删书包**：有订单引用就拦；没有引用则连带删除它的单价行（单价是书包自己的子数据）。
 
+**订单分页的关键点（阶段④）**：
+
+1. **分页粒度是订单，不是明细**：先 `SELECT DISTINCT order_id ... ORDER BY order_id DESC LIMIT ? OFFSET ?`
+   拿到当页的 10 个订单 id，再用 `WHERE o.id IN (...)` 回查完整行。
+   直接对 `order_detail` 分页会把一页变成 10 条明细。
+2. **总数用 `COUNT(DISTINCT order_id)`**，按员工筛时同一订单多条明细只算一次。
+3. **页码越界自动回退**：删掉最后一页的唯一订单、或筛选后页数变少时，
+   界面会自动退到有效页，不会停在空页。
+4. 分页状态（页码、每页 10、筛选员工）只存在 UI；Service 只返回 `{列表, 总数}`。
+
 ---
 
-## 五、下一步（阶段④：订单分页）
+## 五、下一步（阶段⑤：月度工资核算）
 
-1. `OrderDao` 加一个「按订单维度」的分页查询：
+1. `dao/wagedao.*`：
    ```sql
-   SELECT id FROM orders WHERE id IN (
-       SELECT DISTINCT order_id FROM order_detail WHERE emp_id = ?
-       ORDER BY order_id LIMIT ? OFFSET ?)
+   SELECT e.id, e.name, SUM(d.qty * bp.price) AS total
+   FROM order_detail d
+   JOIN employee e ON e.id = d.emp_id
+   JOIN orders o ON o.id = d.order_id
+   JOIN bag_process bp ON bp.bag_id = o.bag_id AND bp.process_id = d.process_id
+   WHERE substr(d.work_date, 1, 7) = ?
+   GROUP BY e.id ORDER BY total DESC
    ```
-   先拿当页订单 id，再回查主表；总数用 `COUNT(DISTINCT order_id)`。
-2. `OrderService::page(pageIndex, pageSize, empFilter)` 返回 `{列表, 总数}`，
-   分页状态（页码、每页 10）只留在 UI。
-3. 订单页加「上一页 / 下一页 / 第 N/M 页」，可选按员工筛选。
-4. 自检造 15 单 × 3 明细，断言：第 1 页 10 单、第 2 页 5 单、每单明细 3 条；
-   按员工筛时同样按订单计数。
+   单价只取 `bp.price`，`process.price` 只作参考。
+2. 缺单价必须显式暴露：`LEFT JOIN` 找出 `bp.id IS NULL` 的明细，界面单独列「未配置单价」，
+   **绝不能按 0 算进总额**。
+3. 金额按「分」计算（`llround(price*100)`），最后再除 100，避免 `0.1+0.2` 的浮点误差。
+4. 界面：选月份 → 员工汇总表；双击某员工看构成（工序、数量、单价、小计）。
+5. 空月份显示「本月无计件记录」，不是一张 0 元的表。
+6. 自检：写死一组数据手算对账；缺单价场景断言被单独列出且不计入总额。
 
-> 提示：子查询里必须带 `ORDER BY`，否则 `LIMIT/OFFSET` 的翻页结果不稳定。
+> 提示：月份用 `substr(work_date, 1, 7)` 比较 `'2026-11'`，前提是日期都存成 `yyyy-MM-dd`。

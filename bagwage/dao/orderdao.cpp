@@ -4,6 +4,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
 #include <QVariant>
 
 static QSqlDatabase mainDb()
@@ -177,8 +178,109 @@ bool OrderDao::remove(int id)
     return true;
 }
 
-int OrderDao::countAll()
+QList<OrderSummary> OrderDao::pageSummaries(int pageIndex, int pageSize, int empFilter,
+                                            int *totalCount)
 {
+    if (totalCount)
+        *totalCount = 0;
+    if (pageIndex < 0)
+        pageIndex = 0;
+    if (pageSize <= 0)
+        pageSize = 10;
+
+    QList<OrderSummary> result;
+    QSqlDatabase db = mainDb();
+    if (!db.isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return result;
+    }
+
+    // 1) 符合条件的订单总数
+    {
+        QSqlQuery q(db);
+        if (empFilter > 0) {
+            q.prepare(QStringLiteral(
+                "SELECT COUNT(DISTINCT order_id) FROM order_detail WHERE emp_id = ?"));
+            q.addBindValue(empFilter);
+        } else {
+            q.prepare(QStringLiteral("SELECT COUNT(*) FROM orders"));
+        }
+        if (!q.exec() || !q.next()) {
+            m_lastError = q.lastError().text();
+            return result;
+        }
+        if (totalCount)
+            *totalCount = q.value(0).toInt();
+    }
+
+    // 2) 当页的订单 id：按员工筛时先对明细 DISTINCT，再 LIMIT
+    QList<int> ids;
+    {
+        QSqlQuery q(db);
+        if (empFilter > 0) {
+            q.prepare(QStringLiteral(
+                "SELECT DISTINCT order_id FROM order_detail WHERE emp_id = ? "
+                "ORDER BY order_id DESC LIMIT ? OFFSET ?"));
+            q.addBindValue(empFilter);
+        } else {
+            q.prepare(QStringLiteral(
+                "SELECT id FROM orders ORDER BY id DESC LIMIT ? OFFSET ?"));
+        }
+        q.addBindValue(pageSize);
+        q.addBindValue(pageIndex * pageSize);
+        if (!q.exec()) {
+            m_lastError = q.lastError().text();
+            return result;
+        }
+        while (q.next())
+            ids << q.value(0).toInt();
+    }
+
+    if (ids.isEmpty())
+        return result;
+
+    // 3) 用这 10 个 id 回查完整行（聚合明细数和合计金额）
+    QStringList marks;
+    for (int i = 0; i < ids.size(); ++i)
+        marks << QStringLiteral("?");
+
+    QSqlQuery q(db);
+    const QString sql = QStringLiteral(
+        "SELECT o.id, COALESCE(o.order_date, ''), o.bag_id, COALESCE(b.name, '(已删除)'), "
+        "       o.floor, o.qty, COUNT(d.id) AS detail_count, "
+        "       COALESCE(SUM(d.qty * bp.price), 0.0) AS total_amount "
+        "FROM orders o "
+        "LEFT JOIN bag b ON b.id = o.bag_id "
+        "LEFT JOIN order_detail d ON d.order_id = o.id "
+        "LEFT JOIN bag_process bp ON bp.bag_id = o.bag_id AND bp.process_id = d.process_id "
+        "WHERE o.id IN (%1) "
+        "GROUP BY o.id "
+        "ORDER BY o.id DESC").arg(marks.join(QStringLiteral(",")));
+
+    q.prepare(sql);
+    for (int i = 0; i < ids.size(); ++i)
+        q.addBindValue(ids.at(i));
+
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return result;
+    }
+    while (q.next()) {
+        OrderSummary s;
+        s.id = q.value(0).toInt();
+        s.orderDate = q.value(1).toString();
+        s.bagId = q.value(2).toInt();
+        s.bagName = q.value(3).toString();
+        s.floor = q.value(4).toString();
+        s.qty = q.value(5).toInt();
+        s.detailCount = q.value(6).toInt();
+        s.totalAmount = q.value(7).toDouble();
+        result << s;
+    }
+    return result;
+}
+
+int OrderDao::countAll(){
     QSqlDatabase db = mainDb();
     if (!db.isOpen())
         return -1;

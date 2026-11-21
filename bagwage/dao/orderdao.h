@@ -14,6 +14,12 @@ public:
     QList<Order>        listAll();
     QList<OrderSummary> listSummaries();
 
+    // 按「订单」维度分页：每页 N 个订单，不会被明细行数撑乱。
+    // empFilter > 0 时只算该员工参与过的订单（同一订单多条明细只算一次）。
+    // totalCount 返回符合条件的订单总数（可为 0 表示不关心）。
+    QList<OrderSummary> pageSummaries(int pageIndex, int pageSize, int empFilter,
+                                      int *totalCount);
+
     bool findById(int id, Order *out);
 
     bool insert(Order *out);

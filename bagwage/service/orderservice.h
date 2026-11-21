@@ -18,6 +18,10 @@ class OrderService
 public:
     QList<OrderSummary> listSummaries() const;
 
+    // 按订单维度分页（一页 N 个订单，不是 N 条明细）。
+    // empFilter > 0 时只看该员工参与过的订单；totalCount 返回总订单数。
+    QList<OrderSummary> page(int pageIndex, int pageSize, int empFilter, int *totalCount) const;
+
     bool load(int orderId, Order *order, QList<OrderDetail> *details);
     QList<OrderDetailView> detailView(int orderId) const;
 

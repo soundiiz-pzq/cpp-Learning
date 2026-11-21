@@ -7,6 +7,7 @@
 #include <QList>
 #include <QMainWindow>
 
+class QComboBox;
 class QLabel;
 class QTableWidget;
 class QTabWidget;
@@ -46,8 +47,13 @@ private slots:
     void addOrder();
     void editOrder();
     void removeOrder();
+    void onOrderFilterChanged();
+    void goPrevOrderPage();
+    void goNextOrderPage();
 
 private:
+    enum { kOrderPageSize = 10 };
+
     QWidget *createEmployeePage();
     QWidget *createProcessPage();
     QWidget *createBagPage();
@@ -57,6 +63,8 @@ private:
                                  const QStringList &todo);
 
     bool loadBagPriceMap(QList<Bag> *bags, QHash<int, QList<BagProcess> > *pricesByBag);
+    void populateOrderEmployeeFilter();
+    void updateOrderPageControls();
 
     int  currentEmployeeId() const;
     int  currentEmployeeRow() const;
@@ -86,6 +94,14 @@ private:
     QTableWidget *m_orderTable;
     QPushButton  *m_editOrderButton;
     QPushButton  *m_removeOrderButton;
+    QComboBox    *m_orderEmpFilterCombo;
+    QLabel       *m_orderPageLabel;
+    QPushButton  *m_prevOrderPageButton;
+    QPushButton  *m_nextOrderPageButton;
+
+    int m_orderPage;        // 0 基
+    int m_orderEmpFilter;   // 0 = 全部员工
+    int m_orderTotal;
 };
 
 #endif // MAINWINDOW_H

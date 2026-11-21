@@ -22,6 +22,7 @@
 #include <QLatin1String>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QSet>
 #include <QStringList>
 #include <QVariant>
 #include <QtGlobal>
@@ -982,6 +983,102 @@ void testOrderTransactionRollback()
     check(r2.ok, QStringLiteral("移除故障后重试成功"));
 }
 
+void testOrderPagination()
+{
+    OrderService orderService;
+    BagService bagService;
+    ProcessService processService;
+    EmployeeService employeeService;
+
+    Employee emp;
+    emp.name = QStringLiteral("分页员工");
+    emp.floor = QStringLiteral("6F");
+    employeeService.save(&emp);
+
+    Process p;
+    p.name = QStringLiteral("分页工序");
+    p.price = 0.1;
+    processService.save(&p);
+
+    Bag bag;
+    bag.name = QStringLiteral("分页书包");
+    QList<BagProcess> prices;
+    BagProcess bp;
+    bp.processId = p.id;
+    bp.price = 1.0;
+    prices << bp;
+    check(bagService.save(&bag, prices).ok, QStringLiteral("准备分页测试书包（单价 1.0）"));
+
+    // 15 个订单，每单 3 条明细（同一员工），总额 15 单
+    int created = 0;
+    for (int i = 0; i < 15; ++i) {
+        Order o;
+        o.bagId = bag.id;
+        o.floor = QStringLiteral("6F");
+        o.qty = 10 + i;
+        o.orderDate = QStringLiteral("2026-10-01");
+
+        QList<OrderDetail> details;
+        for (int j = 0; j < 3; ++j) {
+            OrderDetail d;
+            d.empId = emp.id;
+            d.processId = p.id;
+            d.qty = 1 + j;
+            d.workDate = QStringLiteral("2026-10-01");
+            details << d;
+        }
+        if (orderService.save(&o, details).ok)
+            ++created;
+    }
+    check(created == 15, QStringLiteral("造 15 个订单 × 3 条明细（实际 %1）").arg(created));
+
+    int total = 0;
+    QList<OrderSummary> page0 = orderService.page(0, 10, emp.id, &total);
+    check(total == 15, QStringLiteral("按员工筛：共 15 个订单"));
+    check(page0.size() == 10, QStringLiteral("第 1 页 10 个订单"));
+    check(!page0.isEmpty() && page0.at(0).detailCount == 3,
+          QStringLiteral("每单 3 条明细，分页没被明细撑乱"));
+
+    QList<OrderSummary> page1 = orderService.page(1, 10, emp.id, &total);
+    check(page1.size() == 5, QStringLiteral("第 2 页 5 个订单"));
+
+    QList<OrderSummary> page2 = orderService.page(2, 10, emp.id, &total);
+    check(page2.isEmpty(), QStringLiteral("超出范围的第 3 页为空"));
+
+    QSet<int> ids;
+    for (int i = 0; i < page0.size(); ++i)
+        ids.insert(page0.at(i).id);
+    for (int i = 0; i < page1.size(); ++i)
+        ids.insert(page1.at(i).id);
+    check(ids.size() == 15, QStringLiteral("两页合起来正好 15 个不重复的订单"));
+
+    // 不筛选：总数包含前面用例造的订单，每页仍是 10 个
+    int totalAll = 0;
+    const QList<OrderSummary> all0 = orderService.page(0, 10, 0, &totalAll);
+    check(totalAll >= 15 && all0.size() == 10,
+          QStringLiteral("不筛选：总数 %1，第 1 页 10 个").arg(totalAll));
+
+    // 另一个员工筛不到这些订单
+    Employee other;
+    other.name = QStringLiteral("无关员工");
+    other.floor = QStringLiteral("6F");
+    employeeService.save(&other);
+    int otherTotal = 0;
+    const QList<OrderSummary> others = orderService.page(0, 10, other.id, &otherTotal);
+    check(otherTotal == 0 && others.isEmpty(),
+          QStringLiteral("其他员工筛选不到这些订单"));
+
+    // 每页 5 个时：15 单正好 3 页
+    int total5 = 0;
+    const QList<OrderSummary> p5 = orderService.page(0, 5, emp.id, &total5);
+    check(total5 == 15 && p5.size() == 5, QStringLiteral("每页 5 个时第 1 页 5 个"));
+
+    // 越界的页码不能崩，也不能返回上一页的数据
+    int totalBig = 0;
+    const QList<OrderSummary> big = orderService.page(99, 10, emp.id, &totalBig);
+    check(big.isEmpty(), QStringLiteral("超大页码返回空而不是重复数据"));
+}
+
 } // namespace
 
 int runSelfTest()
@@ -989,7 +1086,7 @@ int runSelfTest()
     g_pass = 0;
     g_fail = 0;
 
-    say(QStringLiteral("===== bagwage 自检（阶段① 工序 / ② 书包单价 / ③ 订单）====="));
+    say(QStringLiteral("===== bagwage 自检（①②③④）====="));
 
     QString error;
     QString usedPath = openSelfTestDb(&error);
@@ -1021,6 +1118,7 @@ int runSelfTest()
     testOrderValidation();
     testOrderUpdateAndRemove();
     testOrderTransactionRollback();
+    testOrderPagination();
 
     DatabaseManager::close();
     QFile::remove(usedPath);
