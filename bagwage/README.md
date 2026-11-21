@@ -2,9 +2,9 @@
 
 Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 
-> **当前进度：阶段①（工序模块）已完成。**
-> 已完成：数据库层、公共件（ServiceResult / Transaction / 临时库自检）、员工模块、工序模块。
-> 未完成：书包+单价表、订单+明细、订单分页、工资核算、图表、打包。
+> **当前进度：阶段①（工序）、阶段②（书包 + 单价表）已完成。**
+> 已完成：数据库层、公共件（ServiceResult / Transaction / 临时库自检）、员工、工序、书包 + 单价表。
+> 未完成：订单+明细、订单分页、工资核算、图表、打包。
 
 ---
 
@@ -15,23 +15,26 @@ bagwage/
 ├── bagwage.pro            qmake 工程（QT += sql charts, CONFIG += c++11）
 ├── main.cpp               入口：--selftest 走自检，否则开库建表 → 主窗口
 ├── selftest.cpp/.h        无界面自检（跑在临时库上，不碰正式库）
-├── build.bat              一键编译 / 运行 / 清理
+├── build.bat              一键编译 / 运行 / 自检 / 清理
 ├── dao/                   一张表一个 DAO，只写 SQL
 │   ├── models.h           实体结构体
 │   ├── employeedao.*      员工
 │   ├── processdao.*       工序（含 bag_process / order_detail 引用查询）
-│   └── bagdao.*           书包（阶段②补全增删改查）
+│   ├── bagdao.*           书包（含「已配单价工序数」聚合）
+│   └── bagprocessdao.*    书包×工序单价（按书包整组替换）
 ├── db/
 │   ├── dbmanager.*        连接 + 建表 + 索引 + 轻量迁移
 │   └── transaction.*      RAII 事务（析构自动回滚）
 ├── service/               业务：校验、引用检查、事务编排
 │   ├── serviceresult.h    所有 Service 共用的返回类型
 │   ├── employeeservice.*
-│   └── processservice.*
+│   ├── processservice.*
+│   └── bagservice.*       书包 + 单价表（同一个事务）
 └── ui/                    界面：只收集输入、弹窗、刷新表格
     ├── mainwindow.*
     ├── employeedialog.*
     ├── processdialog.*
+    ├── bagdialog.*        书包名 + 单价表（工序下拉 + 单价）
     └── placeholderpage.*
 ```
 
@@ -68,7 +71,7 @@ mingw32-make -j4
 ```
 
 **自检跑在临时库上**（`%TEMP%\bagwage_selftest_<pid>.db`），跑完自动删除，绝不会往正式 `bagwage.db` 里插数据。
-当前阶段①共 24 项检查，期望最后一行 `===== 结果：PASS 24 / FAIL 0 =====`，退出码 0。
+当前共 56 项检查（阶段① 24 项 + 阶段② 32 项），期望最后一行 `===== 结果：PASS 56 / FAIL 0 =====`，退出码 0。
 
 想手工指定库文件路径（比如拿一份测试数据练手）：
 
@@ -109,8 +112,10 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 | RAII 事务（忘写 rollback 自动回滚） | ✅ 自检里验证了回滚与提交 | `db/transaction.*` |
 | 员工 增/改/删/查 + 界面 | ✅ 删除时校验 `order_detail` 引用 | `service/employeeservice.cpp` |
 | 工序 增/改/删/查 + 界面 | ✅ **两处**引用校验 | `service/processservice.cpp` |
-| 自检跑临时库 | ✅ 24 项 | `selftest.cpp` |
-| 书包 / 订单 / 工资 / 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
+| 书包 增/改/删/查 + 界面 | ✅ 删除时校验订单引用 | `service/bagservice.cpp` |
+| 书包 × 工序 单价表 | ✅ 事务内整组替换，删掉的单价不会残留 | `service/bagservice.cpp` |
+| 自检跑临时库 | ✅ 56 项 | `selftest.cpp` |
+| 订单 / 工资 / 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
 
 **工序删除的引用校验（阶段①重点）**：
 
@@ -120,19 +125,30 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 
 只查一处就会漏拦，或者只看到数据库的英文报错。
 
+**书包单价表的三个关键点（阶段②重点）**：
+
+1. **整组替换**：保存时先 `DELETE FROM bag_process WHERE bag_id = ?`，再逐条插入。
+   如果只用 `INSERT OR REPLACE`，用户删掉某道工序的单价后旧行会留在表里，继续参与工资计算。
+2. **一个事务**：书包主表和单价子表在同一个 `Transaction` 里，子表写失败时书包本身也不会留下
+   （自检里用触发器强制失败验证过）。
+3. **删书包**：有订单引用就拦；没有引用则连带删除它的单价行（单价是书包自己的子数据）。
+
 ---
 
-## 五、下一步（阶段②：书包 + 单价表）
+## 五、下一步（阶段③：订单 + 批量明细）
 
-1. `dao/bagdao.*` 补全 `insert/update/remove/countReferences`。
-2. `dao/bagprocessdao.*` 新建：按书包查单价列表、批量替换单价。
-3. `service/bagservice.*`：`save(bag, 单价列表)` 用 `Transaction` 包住：
-   - 新增则 `INSERT bag` 拿 `lastInsertId()`，编辑则 `UPDATE`
-   - 单价**先全删该书包的行再全量插入**（避免用户删掉某道工序的单价后旧行残留继续算工资）
-   - 任何一步失败整体回滚
-4. `ui/bagdialog.*`：书包名 + 单价表格（工序 / 单价两列，可增删行）。
-5. 主窗口把「书包」占位页换成真页面，`.pro` 加新文件，**重新 qmake**。
-6. `selftest.cpp` 加用例：同一书包两道工序不同价、改名后单价不丢、删掉一道单价保存后确实没了。
-7. 跑 `--selftest` 全绿 → 提交 `阶段②：书包与单价表`。
+1. `dao/orderdao.*`：`insert`（拿 `lastInsertId()`）、`update`、`remove`、`findById`、
+   `countByBag`/`countByEmployee`（分页要用的总数）。
+2. `dao/orderdetaildao.*`：按订单查明细、按订单删除、批量插入。
+3. `service/orderservice.*`：
+   - `createOrder(order, details)` 用 `Transaction` 包住：插 `orders` → 拿 id → 循环插明细 → commit
+   - **录明细时就校验单价存在**：`bag_process` 里没有 `(bag_id, process_id)` 就当场拒绝，
+     别等到算工资时才发现是 0 元
+   - 明细里的 `emp_id`/`process_id` 必须存在
+4. `ui/orderdialog.*`：选书包 + 楼层 + 数量 + 日期，明细表格（员工 / 工序 / 数量 / 日期），可增删行。
+5. 主窗口「订单」页：列表 + 新建/编辑/删除，删除前二次确认（明细会被级联删掉）。
+6. `selftest.cpp` 加用例：事务内插 1 单 + 2 条明细，第 2 条故意用不存在的 emp_id，
+   断言失败后 `orders` 和 `order_detail` 都是 0 行。
 
-> 提示：Qt 5.9 自带的 SQLite 不支持 `ON CONFLICT DO UPDATE`（要 3.24+），用 `INSERT OR REPLACE` 或「先删后插」。
+> 提示：`order_detail` 对 `orders` 是 `ON DELETE CASCADE`，删订单时明细会被静默带走，
+> 界面必须二次确认；`orders.order_date` 列已经在阶段①建好了。

@@ -61,4 +61,12 @@ struct ReferenceInfo
     QString name;
 };
 
+// 书包列表页的一行：书包 + 已配置单价的工序数
+struct BagSummary
+{
+    int     id = 0;
+    QString name;
+    int     priceCount = 0;
+};
+
 #endif // MODELS_H

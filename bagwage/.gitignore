@@ -19,6 +19,11 @@ object_script.*
 *.db-shm
 result.log
 
+# ===== 验收/测试残留 =====
+*.accept-backup
+*.bak
+*.log
+
 # ===== Qt Creator 的用户/本机配置 =====
 *.pro.user
 *.pro.user.*
