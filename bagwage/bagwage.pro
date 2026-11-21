@@ -25,13 +25,17 @@ SOURCES += \
     dao/bagdao.cpp \
     dao/bagprocessdao.cpp \
     dao/employeedao.cpp \
+    dao/orderdao.cpp \
+    dao/orderdetaildao.cpp \
     dao/processdao.cpp \
     service/bagservice.cpp \
     service/employeeservice.cpp \
+    service/orderservice.cpp \
     service/processservice.cpp \
     ui/mainwindow.cpp \
     ui/bagdialog.cpp \
     ui/employeedialog.cpp \
+    ui/orderdialog.cpp \
     ui/processdialog.cpp \
     ui/placeholderpage.cpp
 
@@ -43,13 +47,17 @@ HEADERS += \
     db/dbmanager.h \
     db/transaction.h \
     dao/employeedao.h \
+    dao/orderdao.h \
+    dao/orderdetaildao.h \
     dao/processdao.h \
     service/serviceresult.h \
     service/bagservice.h \
     service/employeeservice.h \
+    service/orderservice.h \
     service/processservice.h \
     ui/mainwindow.h \
     ui/bagdialog.h \
     ui/employeedialog.h \
+    ui/orderdialog.h \
     ui/processdialog.h \
     ui/placeholderpage.h

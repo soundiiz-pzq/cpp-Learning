@@ -28,10 +28,18 @@ private slots:
     void removePriceRow();
     void onAccept();
 
+protected:
+    // 表格单元格被 QComboBox / QDoubleSpinBox 占满，点击落在控件上，
+    // 表格自己的 currentRow 不会跟着变。这里在控件收到点击/焦点时同步选中行，
+    // 否则「删除选中行」永远删的是最后一次 selectRow 的那行。
+    bool eventFilter(QObject *watched, QEvent *event);
+
 private:
     void    setRowProcess(int row, int processId);
     void    setRowPrice(int row, double price);
     int     nextUnusedProcessId() const;
+    void    highlightRow(int row);
+    int     rowOfWidget(const QObject *widget) const;
 
     QLineEdit    *m_nameEdit;
     QTableWidget *m_priceTable;

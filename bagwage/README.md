@@ -2,9 +2,9 @@
 
 Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 
-> **当前进度：阶段①（工序）、阶段②（书包 + 单价表）已完成。**
-> 已完成：数据库层、公共件（ServiceResult / Transaction / 临时库自检）、员工、工序、书包 + 单价表。
-> 未完成：订单+明细、订单分页、工资核算、图表、打包。
+> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+批量明细）已完成。**
+> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细。
+> 未完成：订单分页、工资核算、图表、打包。
 
 ---
 
@@ -13,7 +13,7 @@ Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 ```
 bagwage/
 ├── bagwage.pro            qmake 工程（QT += sql charts, CONFIG += c++11）
-├── main.cpp               入口：--selftest 走自检，否则开库建表 → 主窗口
+├── main.cpp               入口：加载中文翻译 → --selftest 或开库建表 → 主窗口
 ├── selftest.cpp/.h        无界面自检（跑在临时库上，不碰正式库）
 ├── build.bat              一键编译 / 运行 / 自检 / 清理
 ├── dao/                   一张表一个 DAO，只写 SQL
@@ -21,7 +21,9 @@ bagwage/
 │   ├── employeedao.*      员工
 │   ├── processdao.*       工序（含 bag_process / order_detail 引用查询）
 │   ├── bagdao.*           书包（含「已配单价工序数」聚合）
-│   └── bagprocessdao.*    书包×工序单价（按书包整组替换）
+│   ├── bagprocessdao.*    书包×工序单价（按书包整组替换、按书包+工序查价）
+│   ├── orderdao.*         订单（列表带明细数/合计金额聚合）
+│   └── orderdetaildao.*   订单明细（含员工名/工序名/单价/小计的视图查询）
 ├── db/
 │   ├── dbmanager.*        连接 + 建表 + 索引 + 轻量迁移
 │   └── transaction.*      RAII 事务（析构自动回滚）
@@ -29,12 +31,14 @@ bagwage/
 │   ├── serviceresult.h    所有 Service 共用的返回类型
 │   ├── employeeservice.*
 │   ├── processservice.*
-│   └── bagservice.*       书包 + 单价表（同一个事务）
+│   ├── bagservice.*       书包 + 单价表（同一个事务）
+│   └── orderservice.*     订单 + 批量明细（单价必须存在，否则拒绝）
 └── ui/                    界面：只收集输入、弹窗、刷新表格
     ├── mainwindow.*
     ├── employeedialog.*
     ├── processdialog.*
-    ├── bagdialog.*        书包名 + 单价表（工序下拉 + 单价）
+    ├── bagdialog.*        书包名 + 单价表
+    ├── orderdialog.*      订单头 + 明细表格
     └── placeholderpage.*
 ```
 
@@ -70,8 +74,10 @@ mingw32-make -j4
 .\bagwage.exe --selftest
 ```
 
-**自检跑在临时库上**（`%TEMP%\bagwage_selftest_<pid>.db`），跑完自动删除，绝不会往正式 `bagwage.db` 里插数据。
-当前共 56 项检查（阶段① 24 项 + 阶段② 32 项），期望最后一行 `===== 结果：PASS 56 / FAIL 0 =====`，退出码 0。
+**自检跑在临时库上**，跑完自动删除，绝不会往正式 `bagwage.db` 里插数据。
+默认用 `%TEMP%\bagwage_selftest_<pid>.db`；**如果临时目录里 SQLite 打不开库**
+（本机实测会报 `out of memory Error opening database`），会自动回退到程序目录建库、跑完删掉。
+当前共 85 项检查，期望最后一行 `===== 结果：PASS 85 / FAIL 0 =====`，退出码 0。
 
 想手工指定库文件路径（比如拿一份测试数据练手）：
 
@@ -100,6 +106,19 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 - 生成 32 位程序，不能链接 64 位库；
 - g++ 5.3 只到 C++14，**代码按 C++11 写**，别用 `std::optional`、`std::filesystem`、结构化绑定。
 
+### 4. QMessageBox 按钮中文靠 Qt 翻译文件
+
+`main.cpp` 启动时从 `QLibraryInfo::TranslationsPath` 加载 `qt_zh_CN.qm`，
+加载不到就静默跳过（按钮变回英文 Yes/No/OK）。
+所以**打包时别加 `--no-translations`**，否则 `translations\qt_zh_CN.qm` 不会被带上。
+
+### 5. 界面上「删除选中行」为什么不用表格的 currentRow
+
+单价表 / 明细表的每个单元格都被 `QComboBox`、`QDoubleSpinBox` 占满，
+点击落在控件上，`QTableWidget::currentRow()` 不会跟着变——曾导致「删除选中行」永远删最后一行。
+现在的做法是给每行控件装 `eventFilter`，控件获得焦点/被点击时同步选中行。
+**以后再加类似的「带控件表格」时记得照抄这个模式**。
+
 ---
 
 ## 四、已完成的功能
@@ -114,8 +133,10 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 | 工序 增/改/删/查 + 界面 | ✅ **两处**引用校验 | `service/processservice.cpp` |
 | 书包 增/改/删/查 + 界面 | ✅ 删除时校验订单引用 | `service/bagservice.cpp` |
 | 书包 × 工序 单价表 | ✅ 事务内整组替换，删掉的单价不会残留 | `service/bagservice.cpp` |
-| 自检跑临时库 | ✅ 56 项 | `selftest.cpp` |
-| 订单 / 工资 / 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
+| 订单 + 批量明细 | ✅ 事务写入；明细单价必须已配置 | `service/orderservice.cpp` |
+| 订单列表（含合计金额） | ✅ 合计取 `bag_process` 单价 | `dao/orderdao.cpp` |
+| 自检跑临时库 | ✅ 85 项（含界面回归） | `selftest.cpp` |
+| 工资 / 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
 
 **工序删除的引用校验（阶段①重点）**：
 
@@ -135,20 +156,19 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 
 ---
 
-## 五、下一步（阶段③：订单 + 批量明细）
+## 五、下一步（阶段④：订单分页）
 
-1. `dao/orderdao.*`：`insert`（拿 `lastInsertId()`）、`update`、`remove`、`findById`、
-   `countByBag`/`countByEmployee`（分页要用的总数）。
-2. `dao/orderdetaildao.*`：按订单查明细、按订单删除、批量插入。
-3. `service/orderservice.*`：
-   - `createOrder(order, details)` 用 `Transaction` 包住：插 `orders` → 拿 id → 循环插明细 → commit
-   - **录明细时就校验单价存在**：`bag_process` 里没有 `(bag_id, process_id)` 就当场拒绝，
-     别等到算工资时才发现是 0 元
-   - 明细里的 `emp_id`/`process_id` 必须存在
-4. `ui/orderdialog.*`：选书包 + 楼层 + 数量 + 日期，明细表格（员工 / 工序 / 数量 / 日期），可增删行。
-5. 主窗口「订单」页：列表 + 新建/编辑/删除，删除前二次确认（明细会被级联删掉）。
-6. `selftest.cpp` 加用例：事务内插 1 单 + 2 条明细，第 2 条故意用不存在的 emp_id，
-   断言失败后 `orders` 和 `order_detail` 都是 0 行。
+1. `OrderDao` 加一个「按订单维度」的分页查询：
+   ```sql
+   SELECT id FROM orders WHERE id IN (
+       SELECT DISTINCT order_id FROM order_detail WHERE emp_id = ?
+       ORDER BY order_id LIMIT ? OFFSET ?)
+   ```
+   先拿当页订单 id，再回查主表；总数用 `COUNT(DISTINCT order_id)`。
+2. `OrderService::page(pageIndex, pageSize, empFilter)` 返回 `{列表, 总数}`，
+   分页状态（页码、每页 10）只留在 UI。
+3. 订单页加「上一页 / 下一页 / 第 N/M 页」，可选按员工筛选。
+4. 自检造 15 单 × 3 明细，断言：第 1 页 10 单、第 2 页 5 单、每单明细 3 条；
+   按员工筛时同样按订单计数。
 
-> 提示：`order_detail` 对 `orders` 是 `ON DELETE CASCADE`，删订单时明细会被静默带走，
-> 界面必须二次确认；`orders.order_date` 列已经在阶段①建好了。
+> 提示：子查询里必须带 `ORDER BY`，否则 `LIMIT/OFFSET` 的翻页结果不稳定。

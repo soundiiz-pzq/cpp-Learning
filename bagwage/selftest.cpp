@@ -5,7 +5,16 @@
 #include "dao/models.h"
 #include "dao/processdao.h"
 #include "service/bagservice.h"
+#include "service/employeeservice.h"
+#include "service/orderservice.h"
 #include "service/processservice.h"
+#include "ui/bagdialog.h"
+
+#include <QApplication>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QFocusEvent>
+#include <QTableWidget>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -56,18 +65,42 @@ int countRows(const QString &table)
     return q.value(0).toInt();
 }
 
+// 依次尝试候选库路径，成功一个就返回。返回实际使用的路径（失败返回空）。
+// 之所以要候选：有的机器上 %TEMP% 写不进 SQLite 库（实测会报
+// "out of memory Error opening database"），这时退回到程序同目录。
+QString openSelfTestDb(QString *error)
+{
+    QStringList candidates;
+    candidates << QDir(QDir::tempPath())
+                      .filePath(QStringLiteral("bagwage_selftest_%1.db")
+                                    .arg(QCoreApplication::applicationPid()));
+    candidates << QDir(QCoreApplication::applicationDirPath())
+                      .filePath(QStringLiteral("bagwage_selftest_%1.db")
+                                    .arg(QCoreApplication::applicationPid()));
+
+    for (int i = 0; i < candidates.size(); ++i) {
+        const QString path = candidates.at(i);
+        QFile::remove(path);
+        DatabaseManager::setDatabasePath(path);
+
+        if (DatabaseManager::open(error) && DatabaseManager::ensureSchema(error)) {
+            if (i > 0)
+                say(QStringLiteral("（临时目录不可用，改用程序目录建自检库）"));
+            return path;
+        }
+        DatabaseManager::close();
+    }
+    return QString();
+}
+
 bool cleanRequire(QString *error)
 {
-    if (!DatabaseManager::open(error)) {
-        say(QStringLiteral("[FAIL] 打开临时数据库失败：%1").arg(*error));
-        return false;
+    if (DatabaseManager::open(error) && DatabaseManager::ensureSchema(error)) {
+        check(true, QStringLiteral("打开数据库并建表（临时库）"));
+        return true;
     }
-    if (!DatabaseManager::ensureSchema(error)) {
-        say(QStringLiteral("[FAIL] 建表失败：%1").arg(*error));
-        return false;
-    }
-    check(true, QStringLiteral("打开数据库并建表（临时库）"));
-    return true;
+    say(QStringLiteral("[FAIL] 打开临时数据库失败：%1").arg(*error));
+    return false;
 }
 
 void testSchema()
@@ -546,6 +579,409 @@ void testBagRemoval()
           QStringLiteral("删除失败时单价没被误删"));
 }
 
+// 回归测试：点哪一行，「删除选中行」就删哪一行。
+// 表格单元格被下拉/数字框占满，点击不会更新 currentRow，靠事件过滤器同步选中行。
+void testBagDialogRowDeletion()
+{
+    QList<Process> processes;
+    for (int i = 1; i <= 3; ++i) {
+        Process p;
+        p.id = i;
+        p.name = QStringLiteral("工序%1").arg(i);
+        p.price = 0.1 * i;
+        processes << p;
+    }
+
+    BagDialog dialog(processes);
+
+    for (int i = 0; i < 3; ++i)
+        QMetaObject::invokeMethod(&dialog, "addPriceRow", Qt::DirectConnection);
+
+    QTableWidget *table = dialog.findChild<QTableWidget *>();
+    check(table != 0 && table->rowCount() == 3, QStringLiteral("对话框可以添加 3 行单价"));
+
+    if (!table || table->rowCount() != 3)
+        return;
+
+    QStringList before;
+    for (int row = 0; row < 3; ++row) {
+        QComboBox *combo = qobject_cast<QComboBox *>(table->cellWidget(row, 0));
+        before << (combo ? QString::number(combo->currentData().toInt()) : QString());
+    }
+
+    // 模拟用户点第 2 行的数字框（FocusIn 会触发事件过滤器同步选中行）
+    QDoubleSpinBox *spin = qobject_cast<QDoubleSpinBox *>(table->cellWidget(1, 1));
+    if (spin) {
+        QFocusEvent focus(QEvent::FocusIn, Qt::MouseFocusReason);
+        QApplication::sendEvent(spin, &focus);
+    }
+
+    QMetaObject::invokeMethod(&dialog, "removePriceRow", Qt::DirectConnection);
+
+    check(table->rowCount() == 2, QStringLiteral("删除后剩 2 行"));
+
+    QStringList after;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QComboBox *combo = qobject_cast<QComboBox *>(table->cellWidget(row, 0));
+        after << (combo ? QString::number(combo->currentData().toInt()) : QString());
+    }
+
+    QStringList expected;
+    expected << before.at(0) << before.at(2);
+    check(after == expected,
+          QStringLiteral("删掉的是被点中的第 2 行（剩余 %1）")
+              .arg(after.join(QStringLiteral(","))));
+}
+
+void testOrderBasics()
+{
+    OrderService orderService;
+    BagService bagService;
+    ProcessService processService;
+    EmployeeService employeeService;
+
+    // 准备：员工 + 书包 + 两道工序单价
+    Employee emp;
+    emp.name = QStringLiteral("订单测试员工");
+    emp.floor = QStringLiteral("2F");
+    employeeService.save(&emp);
+
+    Process p1;
+    p1.name = QStringLiteral("订单工序A");
+    p1.price = 0.5;
+    processService.save(&p1);
+
+    Process p2;
+    p2.name = QStringLiteral("订单工序B");
+    p2.price = 1.0;
+    processService.save(&p2);
+
+    Bag bag;
+    bag.name = QStringLiteral("订单测试书包");
+    QList<BagProcess> prices;
+    BagProcess bp1;
+    bp1.processId = p1.id;
+    bp1.price = 2.0;
+    prices << bp1;
+    BagProcess bp2;
+    bp2.processId = p2.id;
+    bp2.price = 3.0;
+    prices << bp2;
+    check(bagService.save(&bag, prices).ok, QStringLiteral("准备测试书包（A=2.0 / B=3.0）"));
+
+    const int ordersBefore = countRows(QStringLiteral("orders"));
+
+    // 新建订单 + 两条明细
+    Order order;
+    order.bagId = bag.id;
+    order.floor = QStringLiteral("2F");
+    order.qty = 100;
+    order.orderDate = QStringLiteral("2026-11-20");
+
+    QList<OrderDetail> details;
+    OrderDetail d1;
+    d1.empId = emp.id;
+    d1.processId = p1.id;
+    d1.qty = 10;
+    d1.workDate = QStringLiteral("2026-11-20");
+    details << d1;
+    OrderDetail d2;
+    d2.empId = emp.id;
+    d2.processId = p2.id;
+    d2.qty = 5;
+    d2.workDate = QStringLiteral("2026-11-21");
+    details << d2;
+
+    ServiceResult r = orderService.save(&order, details);
+    check(r.ok && order.id > 0, QStringLiteral("新建订单成功（id=%1）").arg(order.id));
+    check(countRows(QStringLiteral("orders")) == ordersBefore + 1,
+          QStringLiteral("订单主表新增 1 行"));
+    check(countRows(QStringLiteral("order_detail")) > 0, QStringLiteral("明细已写入"));
+
+    // 明细数与合计金额：10*2.0 + 5*3.0 = 35.0
+    bool found = false;
+    OrderSummary summary;
+    const QList<OrderSummary> summaries = orderService.listSummaries();
+    for (int i = 0; i < summaries.size(); ++i) {
+        if (summaries.at(i).id == order.id) {
+            summary = summaries.at(i);
+            found = true;
+            break;
+        }
+    }
+    check(found && summary.detailCount == 2,
+          QStringLiteral("列表页明细数 = 2"));
+    check(found && qAbs(summary.totalAmount - 35.0) < 1e-9,
+          QStringLiteral("合计金额取书包单价：10*2.0 + 5*3.0 = %1")
+              .arg(QString::number(summary.totalAmount, 'f', 2)));
+
+    // 明细视图：员工名/工序名/单价/小计
+    const QList<OrderDetailView> view = orderService.detailView(order.id);
+    check(view.size() == 2, QStringLiteral("明细视图 2 行"));
+    if (view.size() == 2) {
+        check(view.at(0).empName == QStringLiteral("订单测试员工")
+                  && view.at(0).processName == QStringLiteral("订单工序A")
+                  && qAbs(view.at(0).unitPrice - 2.0) < 1e-9
+                  && qAbs(view.at(0).amount - 20.0) < 1e-9,
+              QStringLiteral("明细 1：员工/工序/单价/小计正确"));
+    }
+}
+
+void testOrderValidation()
+{
+    OrderService orderService;
+    BagService bagService;
+    ProcessService processService;
+    EmployeeService employeeService;
+
+    // 挑一个只有部分工序定价的书包：新建一个只配 A 的
+    Process priced;
+    priced.name = QStringLiteral("已定价工序");
+    priced.price = 0.1;
+    processService.save(&priced);
+    Process unpriced;
+    unpriced.name = QStringLiteral("未定价工序");
+    unpriced.price = 0.1;
+    processService.save(&unpriced);
+
+    Bag bag;
+    bag.name = QStringLiteral("半价书包");
+    QList<BagProcess> prices;
+    BagProcess bp;
+    bp.processId = priced.id;
+    bp.price = 1.0;
+    prices << bp;
+    bagService.save(&bag, prices);
+
+    Employee emp;
+    emp.name = QStringLiteral("校验员工");
+    emp.floor = QStringLiteral("3F");
+    employeeService.save(&emp);
+
+    const int ordersBefore = countRows(QStringLiteral("orders"));
+
+    // 明细用了没配单价的工序
+    Order o;
+    o.bagId = bag.id;
+    o.floor = QStringLiteral("3F");
+    o.qty = 10;
+    o.orderDate = QStringLiteral("2026-11-20");
+    QList<OrderDetail> details;
+    OrderDetail d;
+    d.empId = emp.id;
+    d.processId = unpriced.id;
+    d.qty = 1;
+    d.workDate = QStringLiteral("2026-11-20");
+    details << d;
+    ServiceResult r = orderService.save(&o, details);
+    check(!r.ok && r.message.contains(QStringLiteral("配单价")),
+          QStringLiteral("明细工序未配单价 → 拒绝，提示里写明配单价"));
+    check(countRows(QStringLiteral("orders")) == ordersBefore,
+          QStringLiteral("校验失败没有留下订单"));
+
+    // 员工不存在
+    Order o2;
+    o2.bagId = bag.id;
+    o2.floor = QStringLiteral("3F");
+    o2.qty = 10;
+    o2.orderDate = QStringLiteral("2026-11-20");
+    QList<OrderDetail> badDetails;
+    OrderDetail bad;
+    bad.empId = 99999;
+    bad.processId = priced.id;
+    bad.qty = 1;
+    bad.workDate = QStringLiteral("2026-11-20");
+    badDetails << bad;
+    r = orderService.save(&o2, badDetails);
+    check(!r.ok && r.message.contains(QStringLiteral("员工不存在")),
+          QStringLiteral("明细员工不存在 → 拒绝"));
+
+    // 没有明细
+    Order o3;
+    o3.bagId = bag.id;
+    o3.floor = QStringLiteral("3F");
+    o3.qty = 10;
+    o3.orderDate = QStringLiteral("2026-11-20");
+    r = orderService.save(&o3, QList<OrderDetail>());
+    check(!r.ok, QStringLiteral("没有明细 → 拒绝"));
+
+    // 日期格式错
+    Order o4;
+    o4.bagId = bag.id;
+    o4.floor = QStringLiteral("3F");
+    o4.qty = 10;
+    o4.orderDate = QStringLiteral("2026/11/20");
+    QList<OrderDetail> okDetails;
+    OrderDetail ok;
+    ok.empId = emp.id;
+    ok.processId = priced.id;
+    ok.qty = 1;
+    ok.workDate = QStringLiteral("2026-11-20");
+    okDetails << ok;
+    r = orderService.save(&o4, okDetails);
+    check(!r.ok && r.message.contains(QStringLiteral("日期")),
+          QStringLiteral("订单日期格式错 → 拒绝"));
+}
+
+void testOrderUpdateAndRemove()
+{
+    OrderService orderService;
+    BagService bagService;
+    ProcessService processService;
+    EmployeeService employeeService;
+
+    Employee emp;
+    emp.name = QStringLiteral("编辑员工");
+    emp.floor = QStringLiteral("4F");
+    employeeService.save(&emp);
+
+    Process p;
+    p.name = QStringLiteral("编辑工序");
+    p.price = 0.2;
+    processService.save(&p);
+
+    Bag bag;
+    bag.name = QStringLiteral("编辑书包");
+    QList<BagProcess> prices;
+    BagProcess bp;
+    bp.processId = p.id;
+    bp.price = 1.5;
+    prices << bp;
+    bagService.save(&bag, prices);
+
+    // 先建 2 条明细
+    Order order;
+    order.bagId = bag.id;
+    order.floor = QStringLiteral("4F");
+    order.qty = 50;
+    order.orderDate = QStringLiteral("2026-11-10");
+
+    QList<OrderDetail> details;
+    OrderDetail d1;
+    d1.empId = emp.id;
+    d1.processId = p.id;
+    d1.qty = 4;
+    d1.workDate = QStringLiteral("2026-11-10");
+    details << d1;
+    OrderDetail d2;
+    d2.empId = emp.id;
+    d2.processId = p.id;
+    d2.qty = 6;
+    d2.workDate = QStringLiteral("2026-11-11");
+    details << d2;
+    orderService.save(&order, details);
+    check(countBagProcessRows(bag.id) == 1, QStringLiteral("（准备）书包单价 1 条"));
+
+    // 编辑：数量改 200，明细只留 1 条且数量改 7
+    order.qty = 200;
+    QList<OrderDetail> newDetails;
+    OrderDetail nd;
+    nd.empId = emp.id;
+    nd.processId = p.id;
+    nd.qty = 7;
+    nd.workDate = QStringLiteral("2026-11-10");
+    newDetails << nd;
+
+    ServiceResult r = orderService.save(&order, newDetails);
+    check(r.ok, QStringLiteral("编辑订单成功"));
+    check(countRows(QStringLiteral("order_detail")) > 0, QStringLiteral("明细仍然存在"));
+
+    QList<OrderDetail> stored;
+    Order reloaded;
+    orderService.load(order.id, &reloaded, &stored);
+    check(reloaded.qty == 200, QStringLiteral("订单数量已更新为 200"));
+    check(stored.size() == 1 && stored.at(0).qty == 7,
+          QStringLiteral("旧明细被整组替换（剩 1 条，数量 7）"));
+
+    // 删除订单 → 明细一起走
+    const int orderId = order.id;
+    r = orderService.remove(orderId);
+    check(r.ok, QStringLiteral("删除订单成功"));
+
+    QSqlDatabase db = QSqlDatabase::database(QLatin1String(DatabaseManager::kMainConnection));
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral("SELECT COUNT(*) FROM order_detail WHERE order_id = ?"));
+    q.addBindValue(orderId);
+    q.exec();
+    check(q.next() && q.value(0).toInt() == 0,
+          QStringLiteral("订单明细被一并删除"));
+    Order gone;
+    check(!orderService.load(orderId, &gone, 0), QStringLiteral("订单记录确实没了"));
+}
+
+void testOrderTransactionRollback()
+{
+    OrderService orderService;
+    BagService bagService;
+    ProcessService processService;
+    EmployeeService employeeService;
+    QSqlDatabase db = QSqlDatabase::database(QLatin1String(DatabaseManager::kMainConnection));
+
+    Employee emp;
+    emp.name = QStringLiteral("回滚员工");
+    emp.floor = QStringLiteral("5F");
+    employeeService.save(&emp);
+
+    Process p;
+    p.name = QStringLiteral("回滚工序");
+    p.price = 0.3;
+    processService.save(&p);
+
+    Bag bag;
+    bag.name = QStringLiteral("回滚书包");
+    QList<BagProcess> prices;
+    BagProcess bp;
+    bp.processId = p.id;
+    bp.price = 1.0;
+    prices << bp;
+    bagService.save(&bag, prices);
+
+    // 让 qty=999 的明细插入失败，模拟「主表已插、第二条明细报错」
+    check(execSql(db, QStringLiteral(
+                      "CREATE TRIGGER selftest_fail_detail BEFORE INSERT ON order_detail "
+                      "WHEN NEW.qty = 999 BEGIN SELECT RAISE(ABORT, 'selftest forced failure'); END")),
+          QStringLiteral("创建临时触发器（强制明细写入失败）"));
+
+    const int ordersBefore = countRows(QStringLiteral("orders"));
+    const int detailsBefore = countRows(QStringLiteral("order_detail"));
+
+    Order order;
+    order.bagId = bag.id;
+    order.floor = QStringLiteral("5F");
+    order.qty = 10;
+    order.orderDate = QStringLiteral("2026-11-12");
+
+    QList<OrderDetail> details;
+    OrderDetail ok;
+    ok.empId = emp.id;
+    ok.processId = p.id;
+    ok.qty = 1;
+    ok.workDate = QStringLiteral("2026-11-12");
+    details << ok;
+    OrderDetail bad = ok;
+    bad.qty = 999;
+    details << bad;
+
+    const ServiceResult r = orderService.save(&order, details);
+    check(!r.ok, QStringLiteral("第二条明细失败 → save 返回失败"));
+    check(countRows(QStringLiteral("orders")) == ordersBefore,
+          QStringLiteral("回滚后订单没留下"));
+    check(countRows(QStringLiteral("order_detail")) == detailsBefore,
+          QStringLiteral("回滚后第一条明细也没留下"));
+
+    execSql(db, QStringLiteral("DROP TRIGGER selftest_fail_detail"));
+
+    // 故障移除后重试成功
+    details.removeLast();
+    Order retry;
+    retry.bagId = bag.id;
+    retry.floor = QStringLiteral("5F");
+    retry.qty = 10;
+    retry.orderDate = QStringLiteral("2026-11-12");
+    const ServiceResult r2 = orderService.save(&retry, details);
+    check(r2.ok, QStringLiteral("移除故障后重试成功"));
+}
+
 } // namespace
 
 int runSelfTest()
@@ -553,24 +989,26 @@ int runSelfTest()
     g_pass = 0;
     g_fail = 0;
 
-    const QString tempPath = QDir(QDir::tempPath())
-                                 .filePath(QStringLiteral("bagwage_selftest_%1.db")
-                                               .arg(QCoreApplication::applicationPid()));
-
-    say(QStringLiteral("===== bagwage 自检（阶段① 工序 + 阶段② 书包）====="));
-    say(QStringLiteral("临时库：%1").arg(QDir::toNativeSeparators(tempPath)));
-
-    // 确保不碰正式库
-    QFile::remove(tempPath);
-    DatabaseManager::setDatabasePath(tempPath);
+    say(QStringLiteral("===== bagwage 自检（阶段① 工序 / ② 书包单价 / ③ 订单）====="));
 
     QString error;
-    if (!cleanRequire(&error)) {
+    QString usedPath = openSelfTestDb(&error);
+    if (usedPath.isEmpty()) {
+        say(QStringLiteral("[FAIL] 无法创建自检数据库：%1").arg(error));
         DatabaseManager::close();
         return 2;
     }
 
+    say(QStringLiteral("临时库：%1").arg(QDir::toNativeSeparators(usedPath)));
+
+    if (!cleanRequire(&error)) {
+        DatabaseManager::close();
+        QFile::remove(usedPath);
+        return 2;
+    }
+
     testSchema();
+    testBagDialogRowDeletion();
     testProcessCrud();
     testProcessReferences();
     testTransactionRollback();
@@ -579,9 +1017,14 @@ int runSelfTest()
     testBagValidation();
     testBagTransaction();
     testBagRemoval();
+    testOrderBasics();
+    testOrderValidation();
+    testOrderUpdateAndRemove();
+    testOrderTransactionRollback();
 
     DatabaseManager::close();
-    QFile::remove(tempPath);
+    QFile::remove(usedPath);
+    QFile::remove(usedPath + QStringLiteral("-journal"));
 
     say(QStringLiteral("===== 结果：PASS %1 / FAIL %2 =====").arg(g_pass).arg(g_fail));
     return g_fail == 0 ? 0 : 2;

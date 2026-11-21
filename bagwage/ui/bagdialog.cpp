@@ -3,6 +3,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -111,6 +112,7 @@ void BagDialog::addPriceRow()
                            .arg(p.name, QString::number(p.price, 'f', 2)),
                        p.id);
     }
+    combo->installEventFilter(this);
     m_priceTable->setCellWidget(row, 0, combo);
 
     QDoubleSpinBox *spin = new QDoubleSpinBox(m_priceTable);
@@ -118,6 +120,7 @@ void BagDialog::addPriceRow()
     spin->setDecimals(2);
     spin->setSingleStep(0.05);
     spin->setSuffix(QStringLiteral(" 元"));
+    spin->installEventFilter(this);
     m_priceTable->setCellWidget(row, 1, spin);
 
     const int preferred = nextUnusedProcessId();
@@ -126,8 +129,37 @@ void BagDialog::addPriceRow()
         if (index >= 0)
             combo->setCurrentIndex(index);
     }
-    m_priceTable->selectRow(row);
+    highlightRow(row);
     combo->setFocus();
+}
+
+int BagDialog::rowOfWidget(const QObject *widget) const
+{
+    for (int row = 0; row < m_priceTable->rowCount(); ++row) {
+        if (m_priceTable->cellWidget(row, 0) == widget
+            || m_priceTable->cellWidget(row, 1) == widget) {
+            return row;
+        }
+    }
+    return -1;
+}
+
+void BagDialog::highlightRow(int row)
+{
+    if (row < 0 || row >= m_priceTable->rowCount())
+        return;
+    m_priceTable->setCurrentCell(row, 0);
+    m_priceTable->selectRow(row);
+}
+
+bool BagDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::FocusIn) {
+        const int row = rowOfWidget(watched);
+        if (row >= 0)
+            highlightRow(row);
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 void BagDialog::removePriceRow()
@@ -135,8 +167,14 @@ void BagDialog::removePriceRow()
     int row = m_priceTable->currentRow();
     if (row < 0)
         row = m_priceTable->rowCount() - 1;
-    if (row >= 0)
-        m_priceTable->removeRow(row);
+    if (row < 0)
+        return;
+
+    m_priceTable->removeRow(row);
+
+    // 删完把选中行落到相邻行，避免 currentRow 悬空到已删除的行
+    if (m_priceTable->rowCount() > 0)
+        highlightRow(qMin(row, m_priceTable->rowCount() - 1));
 }
 
 void BagDialog::setRowProcess(int row, int processId)

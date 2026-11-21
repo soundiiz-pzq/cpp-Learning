@@ -3,6 +3,8 @@
 
 #include "dao/models.h"
 
+#include <QHash>
+#include <QList>
 #include <QMainWindow>
 
 class QLabel;
@@ -39,13 +41,22 @@ private slots:
     void editBag();
     void removeBag();
 
+    // 订单
+    void refreshOrders();
+    void addOrder();
+    void editOrder();
+    void removeOrder();
+
 private:
     QWidget *createEmployeePage();
     QWidget *createProcessPage();
     QWidget *createBagPage();
+    QWidget *createOrderPage();
     QWidget *makePlaceholderPage(const QString &title,
                                  const QString &summary,
                                  const QStringList &todo);
+
+    bool loadBagPriceMap(QList<Bag> *bags, QHash<int, QList<BagProcess> > *pricesByBag);
 
     int  currentEmployeeId() const;
     int  currentEmployeeRow() const;
@@ -53,6 +64,8 @@ private:
     int  currentProcessRow() const;
     int  currentBagId() const;
     int  currentBagRow() const;
+    int  currentOrderId() const;
+    int  currentOrderRow() const;
     void showServiceFailure(const QString &message);
 
     QTabWidget *m_tabs;
@@ -69,6 +82,10 @@ private:
     QTableWidget *m_bagTable;
     QPushButton  *m_editBagButton;
     QPushButton  *m_removeBagButton;
+
+    QTableWidget *m_orderTable;
+    QPushButton  *m_editOrderButton;
+    QPushButton  *m_removeOrderButton;
 };
 
 #endif // MAINWINDOW_H

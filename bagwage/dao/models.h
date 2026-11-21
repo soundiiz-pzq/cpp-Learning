@@ -69,4 +69,32 @@ struct BagSummary
     int     priceCount = 0;
 };
 
+// 订单列表页的一行：订单 + 书包名 + 明细数 + 合计金额
+struct OrderSummary
+{
+    int     id = 0;
+    QString orderDate;
+    int     bagId = 0;
+    QString bagName;
+    QString floor;
+    int     qty = 0;
+    int     detailCount = 0;
+    double  totalAmount = 0.0;
+};
+
+// 明细的展示形态：带上员工名、工序名、该书包的单价和小计
+struct OrderDetailView
+{
+    int     id = 0;
+    int     orderId = 0;
+    int     empId = 0;
+    int     processId = 0;
+    int     qty = 0;
+    QString workDate;
+    QString empName;
+    QString processName;
+    double  unitPrice = 0.0;
+    double  amount = 0.0;
+};
+
 #endif // MODELS_H

@@ -18,6 +18,9 @@ public:
     bool removeByBag(int bagId);
     bool insert(const BagProcess &bp);
 
+    // 查某书包某工序的单价；没有配置时返回 false（金额不能按 0 算）
+    bool findPrice(int bagId, int processId, double *price);
+
     QString lastError() const { return m_lastError; }
 
 private:

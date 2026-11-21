@@ -1,16 +1,19 @@
 #include "ui/mainwindow.h"
 #include "ui/bagdialog.h"
 #include "ui/employeedialog.h"
+#include "ui/orderdialog.h"
 #include "ui/processdialog.h"
 #include "ui/placeholderpage.h"
 #include "db/dbmanager.h"
 #include "service/bagservice.h"
 #include "service/employeeservice.h"
+#include "service/orderservice.h"
 #include "service/processservice.h"
 
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -36,6 +39,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_bagTable(new QTableWidget(this))
     , m_editBagButton(0)
     , m_removeBagButton(0)
+    , m_orderTable(new QTableWidget(this))
+    , m_editOrderButton(0)
+    , m_removeOrderButton(0)
 {
     setWindowTitle(QStringLiteral("书包生产记账系统 — bagwage"));
     resize(1000, 640);
@@ -52,14 +58,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_tabs->addTab(createEmployeePage(), QStringLiteral("员工"));
     m_tabs->addTab(createProcessPage(), QStringLiteral("工序"));
     m_tabs->addTab(createBagPage(), QStringLiteral("书包"));
-    m_tabs->addTab(makePlaceholderPage(
-                       QStringLiteral("订单管理"),
-                       QStringLiteral("订单 = 某楼层生产某书包的数量；明细 = 谁做了哪道工序、做了多少。"
-                                      "<b>分页必须按订单算</b>，一页 10 个订单。"),
-                       QStringList() << QStringLiteral("新建订单 + 一次性批量录入明细（事务写入）")
-                                     << QStringLiteral("订单列表分页（DISTINCT order_id 子查询）")
-                                     << QStringLiteral("按员工查看其参与的订单，同样按订单分页"))
-                   , QStringLiteral("订单"));
+    m_tabs->addTab(createOrderPage(), QStringLiteral("订单"));
     m_tabs->addTab(makePlaceholderPage(
                        QStringLiteral("工资核算"),
                        QStringLiteral("工资 = Σ(明细数量 × <b>bag_process</b> 单价)，"
@@ -88,6 +87,7 @@ MainWindow::MainWindow(QWidget *parent)
     refreshEmployees();
     refreshProcesses();
     refreshBags();
+    refreshOrders();
 }
 
 QWidget *MainWindow::createEmployeePage()
@@ -221,6 +221,61 @@ QWidget *MainWindow::createBagPage()
     connect(m_editBagButton, SIGNAL(clicked()), this, SLOT(editBag()));
     connect(m_removeBagButton, SIGNAL(clicked()), this, SLOT(removeBag()));
     connect(refreshButton, SIGNAL(clicked()), this, SLOT(refreshBags()));
+
+    return page;
+}
+
+QWidget *MainWindow::createOrderPage()
+{
+    QWidget *page = new QWidget(this);
+
+    m_orderTable->setColumnCount(7);
+    m_orderTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("ID") << QStringLiteral("日期")
+                      << QStringLiteral("书包") << QStringLiteral("楼层")
+                      << QStringLiteral("数量") << QStringLiteral("明细数")
+                      << QStringLiteral("合计金额（元）"));
+    m_orderTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_orderTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_orderTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_orderTable->verticalHeader()->setVisible(false);
+    m_orderTable->horizontalHeader()->setStretchLastSection(false);
+    m_orderTable->setColumnWidth(0, 60);
+    m_orderTable->setColumnWidth(1, 110);
+    m_orderTable->setColumnWidth(2, 220);
+    m_orderTable->setColumnWidth(3, 90);
+    m_orderTable->setColumnWidth(4, 80);
+    m_orderTable->setColumnWidth(5, 80);
+    m_orderTable->setColumnWidth(6, 140);
+
+    QPushButton *addButton = new QPushButton(QStringLiteral("新建订单"), page);
+    m_editOrderButton = new QPushButton(QStringLiteral("编辑"), page);
+    m_removeOrderButton = new QPushButton(QStringLiteral("删除"), page);
+    QPushButton *refreshButton = new QPushButton(QStringLiteral("刷新"), page);
+
+    QHBoxLayout *buttons = new QHBoxLayout;
+    buttons->addWidget(addButton);
+    buttons->addWidget(m_editOrderButton);
+    buttons->addWidget(m_removeOrderButton);
+    buttons->addWidget(refreshButton);
+    buttons->addStretch(1);
+
+    QLabel *hint = new QLabel(
+        QStringLiteral("订单 = 某个楼层生产某款书包的数量；明细才是「谁做了哪道工序」的计件记录。"
+                       "删除订单会连带删除它的全部明细。"),
+        page);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:#777;"));
+
+    QVBoxLayout *layout = new QVBoxLayout(page);
+    layout->addLayout(buttons);
+    layout->addWidget(hint);
+    layout->addWidget(m_orderTable, 1);
+
+    connect(addButton, SIGNAL(clicked()), this, SLOT(addOrder()));
+    connect(m_editOrderButton, SIGNAL(clicked()), this, SLOT(editOrder()));
+    connect(m_removeOrderButton, SIGNAL(clicked()), this, SLOT(removeOrder()));
+    connect(refreshButton, SIGNAL(clicked()), this, SLOT(refreshOrders()));
 
     return page;
 }
@@ -650,4 +705,212 @@ void MainWindow::removeBag()
     // 单价可能被别处引用（比如订单页正开着），这里统一刷新一下相关页
     refreshBags();
     statusBar()->showMessage(QStringLiteral("已删除书包：%1").arg(name), 5000);
+}
+
+// ---------------------------------------------------------------- 订单
+
+bool MainWindow::loadBagPriceMap(QList<Bag> *bags, QHash<int, QList<BagProcess> > *pricesByBag)
+{
+    BagService service;
+    const QList<BagSummary> summaries = service.listAll();
+
+    bags->clear();
+    pricesByBag->clear();
+    for (int i = 0; i < summaries.size(); ++i) {
+        Bag bag;
+        QList<BagProcess> prices;
+        if (!service.load(summaries.at(i).id, &bag, &prices))
+            continue;
+        bags->append(bag);
+        pricesByBag->insert(bag.id, prices);
+    }
+    return !bags->isEmpty();
+}
+
+void MainWindow::refreshOrders()
+{
+    OrderService service;
+    const QList<OrderSummary> orders = service.listSummaries();
+
+    m_orderTable->setRowCount(0);
+    m_orderTable->setRowCount(orders.size());
+    for (int row = 0; row < orders.size(); ++row) {
+        const OrderSummary &o = orders.at(row);
+
+        QTableWidgetItem *idItem = new QTableWidgetItem(QString::number(o.id));
+        idItem->setData(Qt::UserRole, o.id);
+        m_orderTable->setItem(row, 0, idItem);
+
+        m_orderTable->setItem(row, 1, new QTableWidgetItem(o.orderDate));
+        m_orderTable->setItem(row, 2, new QTableWidgetItem(o.bagName));
+
+        QTableWidgetItem *floorItem = new QTableWidgetItem(o.floor);
+        floorItem->setTextAlignment(Qt::AlignCenter);
+        m_orderTable->setItem(row, 3, floorItem);
+
+        QTableWidgetItem *qtyItem = new QTableWidgetItem(QString::number(o.qty));
+        qtyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_orderTable->setItem(row, 4, qtyItem);
+
+        QTableWidgetItem *countItem = new QTableWidgetItem(QString::number(o.detailCount));
+        countItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_orderTable->setItem(row, 5, countItem);
+
+        QTableWidgetItem *amountItem =
+            new QTableWidgetItem(QString::number(o.totalAmount, 'f', 2));
+        amountItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_orderTable->setItem(row, 6, amountItem);
+    }
+
+    if (m_orderTable->rowCount() > 0 && currentOrderRow() < 0)
+        m_orderTable->selectRow(0);
+
+    const bool hasRows = m_orderTable->rowCount() > 0;
+    m_editOrderButton->setEnabled(hasRows);
+    m_removeOrderButton->setEnabled(hasRows);
+}
+
+int MainWindow::currentOrderRow() const
+{
+    const QList<QTableWidgetItem *> selected = m_orderTable->selectedItems();
+    if (selected.isEmpty())
+        return -1;
+    return selected.first()->row();
+}
+
+int MainWindow::currentOrderId() const
+{
+    const int row = currentOrderRow();
+    if (row < 0)
+        return -1;
+    QTableWidgetItem *item = m_orderTable->item(row, 0);
+    return item ? item->data(Qt::UserRole).toInt() : -1;
+}
+
+void MainWindow::addOrder()
+{
+    QList<Bag> bags;
+    QHash<int, QList<BagProcess> > pricesByBag;
+    if (!loadBagPriceMap(&bags, &pricesByBag)) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("还没有书包，请先到「书包」页添加。"));
+        return;
+    }
+
+    EmployeeService employeeService;
+    const QList<Employee> employees = employeeService.listAll();
+    if (employees.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("还没有员工，请先到「员工」页添加。"));
+        return;
+    }
+
+    ProcessService processService;
+    const QList<Process> processes = processService.listAll();
+    if (processes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("还没有工序，请先到「工序」页添加。"));
+        return;
+    }
+
+    OrderDialog dialog(bags, employees, processes, pricesByBag, this);
+    dialog.setOrder(Order(), QList<OrderDetail>());
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    Order order = dialog.order();
+    OrderService service;
+    const ServiceResult result = service.save(&order, dialog.details());
+    if (!result.ok) {
+        showServiceFailure(result.message);
+        return;
+    }
+
+    refreshOrders();
+    statusBar()->showMessage(QStringLiteral("已保存订单 #%1（%2 层）").arg(order.id).arg(order.floor),
+                             5000);
+}
+
+void MainWindow::editOrder()
+{
+    const int orderId = currentOrderId();
+    if (orderId < 0) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先在表格里选择一个订单"));
+        return;
+    }
+
+    OrderService service;
+    Order order;
+    QList<OrderDetail> details;
+    if (!service.load(orderId, &order, &details)) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("该订单已不存在，请刷新后重试"));
+        refreshOrders();
+        return;
+    }
+
+    QList<Bag> bags;
+    QHash<int, QList<BagProcess> > pricesByBag;
+    if (!loadBagPriceMap(&bags, &pricesByBag)) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("书包数据缺失，无法编辑订单"));
+        return;
+    }
+
+    EmployeeService employeeService;
+    const QList<Employee> employees = employeeService.listAll();
+    ProcessService processService;
+    const QList<Process> processes = processService.listAll();
+
+    OrderDialog dialog(bags, employees, processes, pricesByBag, this);
+    dialog.setOrder(order, details);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    Order edited = dialog.order();
+    const ServiceResult result = service.save(&edited, dialog.details());
+    if (!result.ok) {
+        showServiceFailure(result.message);
+        return;
+    }
+
+    refreshOrders();
+    statusBar()->showMessage(QStringLiteral("已保存订单 #%1").arg(edited.id), 5000);
+}
+
+void MainWindow::removeOrder()
+{
+    const int orderId = currentOrderId();
+    if (orderId < 0) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先在表格里选择一个订单"));
+        return;
+    }
+
+    const int row = currentOrderRow();
+    const int detailCount = m_orderTable->item(row, 5)->text().toInt();
+
+    QString question = QStringLiteral("确定要删除订单 #%1 吗？").arg(orderId);
+    if (detailCount > 0)
+        question += QStringLiteral("\n它的 %1 条明细会一起删除，且无法恢复。").arg(detailCount);
+
+    const QMessageBox::StandardButton answer =
+        QMessageBox::question(this, QStringLiteral("确认删除"), question,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    OrderService service;
+    const ServiceResult result = service.remove(orderId);
+    if (!result.ok) {
+        showServiceFailure(result.message);
+        return;
+    }
+
+    refreshOrders();
+    // 订单删掉后，相关书包才可能重新可删
+    refreshBags();
+    statusBar()->showMessage(QStringLiteral("已删除订单 #%1").arg(orderId), 5000);
 }

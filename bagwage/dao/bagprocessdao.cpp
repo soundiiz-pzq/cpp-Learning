@@ -96,3 +96,28 @@ bool BagProcessDao::insert(const BagProcess &bp)
     }
     return true;
 }
+
+bool BagProcessDao::findPrice(int bagId, int processId, double *price)
+{
+    QSqlDatabase db = mainDb();
+    if (!db.isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return false;
+    }
+
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral(
+        "SELECT price FROM bag_process WHERE bag_id = ? AND process_id = ?"));
+    q.addBindValue(bagId);
+    q.addBindValue(processId);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    if (!q.next())
+        return false;   // 没有配置单价，不是错误，调用方按「未定价」处理
+
+    if (price)
+        *price = q.value(0).toDouble();
+    return true;
+}
