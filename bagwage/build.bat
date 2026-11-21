@@ -17,31 +17,25 @@ if /i "%~1"=="run"   goto run
 if /i "%~1"=="test"  goto test
 if /i "%~1"=="clean" goto clean
 
-echo [1/2] qmake ...
-qmake bagwage.pro
-if errorlevel 1 goto fail
-
-echo [2/2] mingw32-make ...
-mingw32-make -j4
-if errorlevel 1 goto fail
-
+call :build
+if errorlevel 1 exit /b 1
 echo.
 echo Build OK. Next: build.bat run   /   build.bat test
 exit /b 0
 
 :run
 if not exist bagwage.exe (
-    echo bagwage.exe not found. Run build.bat first.
-    exit /b 1
+    call :build
+    if errorlevel 1 exit /b 1
 )
 bagwage.exe %2 %3
 exit /b %errorlevel%
 
 :test
-if not exist bagwage.exe (
-    echo bagwage.exe not found. Run build.bat first.
-    exit /b 1
-)
+call :build
+if errorlevel 1 exit /b 1
+echo.
+echo Running self test ...
 bagwage.exe --selftest
 if errorlevel 1 (
     echo.
@@ -52,13 +46,17 @@ echo.
 echo Self test passed.
 exit /b 0
 
+:build
+echo [1/2] qmake ...
+qmake bagwage.pro
+if errorlevel 1 exit /b 1
+echo [2/2] mingw32-make ...
+mingw32-make -j4
+if errorlevel 1 exit /b 1
+exit /b 0
+
 :clean
 mingw32-make distclean
 if exist bagwage.exe del /q bagwage.exe
 echo Build artifacts removed ^(bagwage.db kept^).
 exit /b 0
-
-:fail
-echo.
-echo BUILD FAILED - paste the errors above.
-exit /b 1

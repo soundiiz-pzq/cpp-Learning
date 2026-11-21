@@ -8,6 +8,7 @@
 #include "service/employeeservice.h"
 #include "service/orderservice.h"
 #include "service/processservice.h"
+#include "service/wageservice.h"
 #include "ui/bagdialog.h"
 
 #include <QApplication>
@@ -1079,6 +1080,165 @@ void testOrderPagination()
     check(big.isEmpty(), QStringLiteral("超大页码返回空而不是重复数据"));
 }
 
+void testWageSummary()
+{
+    BagService bagService;
+    ProcessService processService;
+    EmployeeService employeeService;
+    QSqlDatabase db = QSqlDatabase::database(QLatin1String(DatabaseManager::kMainConnection));
+
+    // 用 2025-03 / 2025-04 两个月，避开前面用例造的数据
+    Employee w1;
+    w1.name = QStringLiteral("工资甲");
+    w1.floor = QStringLiteral("7F");
+    employeeService.save(&w1);
+
+    Employee w2;
+    w2.name = QStringLiteral("工资乙");
+    w2.floor = QStringLiteral("7F");
+    employeeService.save(&w2);
+
+    Process p1;
+    p1.name = QStringLiteral("工资工序甲");
+    p1.price = 0.45;
+    processService.save(&p1);
+
+    Process p2;
+    p2.name = QStringLiteral("工资工序乙");
+    p2.price = 0.25;
+    processService.save(&p2);
+
+    Bag bag;
+    bag.name = QStringLiteral("工资书包");
+    QList<BagProcess> prices;
+    BagProcess b1;
+    b1.processId = p1.id;
+    b1.price = 0.45;
+    prices << b1;
+    BagProcess b2;
+    b2.processId = p2.id;
+    b2.price = 0.25;
+    prices << b2;
+    check(bagService.save(&bag, prices).ok, QStringLiteral("准备工资测试书包（0.45 / 0.25）"));
+
+    // 2025-03 的订单 + 明细
+    check(execSql(db, QStringLiteral(
+                      "INSERT INTO orders(bag_id, floor, qty, order_date) "
+                      "VALUES (%1, '7F', 100, '2025-03-01')").arg(bag.id)),
+          QStringLiteral("插入 3 月订单"));
+    QSqlQuery oq(db);
+    oq.exec(QStringLiteral("SELECT id FROM orders ORDER BY id DESC LIMIT 1"));
+    const int orderId = oq.next() ? oq.value(0).toInt() : 0;
+
+    const int rows[][3] = {
+        {w1.id, p1.id, 60},
+        {w1.id, p2.id, 50},
+        {w2.id, p2.id, 40},
+    };
+    for (int i = 0; i < 3; ++i) {
+        execSql(db, QStringLiteral(
+                        "INSERT INTO order_detail(order_id, emp_id, process_id, qty, work_date) "
+                        "VALUES (%1, %2, %3, %4, '2025-03-10')")
+                        .arg(orderId).arg(rows[i][0]).arg(rows[i][1]).arg(rows[i][2]));
+    }
+
+    // 4 月：只给甲记一条，用来验证月份隔离
+    execSql(db, QStringLiteral(
+                    "INSERT INTO orders(bag_id, floor, qty, order_date) "
+                    "VALUES (%1, '7F', 10, '2025-04-02')").arg(bag.id));
+    QSqlQuery oq2(db);
+    oq2.exec(QStringLiteral("SELECT id FROM orders ORDER BY id DESC LIMIT 1"));
+    const int aprilOrder = oq2.next() ? oq2.value(0).toInt() : 0;
+    execSql(db, QStringLiteral(
+                    "INSERT INTO order_detail(order_id, emp_id, process_id, qty, work_date) "
+                    "VALUES (%1, %2, %3, 10, '2025-04-05')")
+                    .arg(aprilOrder).arg(w1.id).arg(p1.id));
+
+    // 未定价：另一款书包只配了 p1 的价，却有一条 p2 的明细
+    Bag bag2;
+    bag2.name = QStringLiteral("缺价书包");
+    QList<BagProcess> prices2;
+    BagProcess only1;
+    only1.processId = p1.id;
+    only1.price = 1.0;
+    prices2 << only1;
+    bagService.save(&bag2, prices2);
+
+    execSql(db, QStringLiteral(
+                    "INSERT INTO orders(bag_id, floor, qty, order_date) "
+                    "VALUES (%1, '7F', 5, '2025-03-03')").arg(bag2.id));
+    QSqlQuery oq3(db);
+    oq3.exec(QStringLiteral("SELECT id FROM orders ORDER BY id DESC LIMIT 1"));
+    const int missingOrder = oq3.next() ? oq3.value(0).toInt() : 0;
+    execSql(db, QStringLiteral(
+                    "INSERT INTO order_detail(order_id, emp_id, process_id, qty, work_date) "
+                    "VALUES (%1, %2, %3, 7, '2025-03-20')")
+                    .arg(missingOrder).arg(w2.id).arg(p2.id));
+
+    WageService service;
+
+    // 月份列表
+    const QStringList months = service.months();
+    check(months.contains(QStringLiteral("2025-03"))
+              && months.contains(QStringLiteral("2025-04")),
+          QStringLiteral("月份列表包含 2025-03 与 2025-04"));
+
+    // 3 月汇总
+    QList<WageDetailLine> unpriced;
+    const QList<WageSummary> march = service.monthlySummary(QStringLiteral("2025-03"), &unpriced);
+    check(march.size() == 2, QStringLiteral("3 月有 2 个员工有工资"));
+
+    qint64 total = 0;
+    qint64 w1Cents = -1;
+    qint64 w2Cents = -1;
+    for (int i = 0; i < march.size(); ++i) {
+        total += march.at(i).totalCents;
+        if (march.at(i).empId == w1.id)
+            w1Cents = march.at(i).totalCents;
+        if (march.at(i).empId == w2.id)
+            w2Cents = march.at(i).totalCents;
+    }
+    check(w1Cents == 3950, QStringLiteral("甲 = 60×0.45 + 50×0.25 = %1 分")
+                               .arg(w1Cents));
+    check(w2Cents == 1000, QStringLiteral("乙 = 40×0.25 = %1 分（未定价的 7 件没算进来）")
+                               .arg(w2Cents));
+    check(total == 4950, QStringLiteral("3 月合计 = %1 分").arg(total));
+
+    // 未定价单独列出
+    check(unpriced.size() == 1, QStringLiteral("未配置单价的明细 1 条"));
+    check(!unpriced.isEmpty() && unpriced.at(0).processName == QStringLiteral("工资工序乙")
+              && unpriced.at(0).qty == 7,
+          QStringLiteral("未定价明细的属性正确（工序乙 / 7 件）"));
+
+    // 构成
+    const QList<WageBreakdown> w1Rows = service.breakdown(w1.id, QStringLiteral("2025-03"));
+    check(w1Rows.size() == 2, QStringLiteral("甲的构成 2 道工序"));
+    qint64 sum = 0;
+    for (int i = 0; i < w1Rows.size(); ++i)
+        sum += w1Rows.at(i).amountCents;
+    check(sum == 3950, QStringLiteral("构成小计相加等于总额"));
+
+    // 月份隔离
+    QList<WageDetailLine> aprilUnpriced;
+    const QList<WageSummary> april = service.monthlySummary(QStringLiteral("2025-04"), &aprilUnpriced);
+    check(april.size() == 1 && april.at(0).totalCents == 450,
+          QStringLiteral("4 月只有甲 10×0.45 = 450 分"));
+
+    // 空月份
+    QList<WageDetailLine> emptyUnpriced;
+    const QList<WageSummary> empty = service.monthlySummary(QStringLiteral("2020-01"), &emptyUnpriced);
+    check(empty.isEmpty() && emptyUnpriced.isEmpty(),
+          QStringLiteral("空月份返回空，不显示 0 元"));
+
+    // 金额格式与精度
+    check(WageService::formatCents(3950) == QStringLiteral("39.50"),
+          QStringLiteral("formatCents(3950) = 39.50"));
+    check(WageService::formatCents(5) == QStringLiteral("0.05"),
+          QStringLiteral("formatCents(5) = 0.05"));
+    check(WageService::centsOf(3, 0.1) == 30 && WageService::centsOf(1, 0.29) == 29,
+          QStringLiteral("浮点单价按分取整（0.1×3=30 分，0.29=29 分）"));
+}
+
 } // namespace
 
 int runSelfTest()
@@ -1086,7 +1246,7 @@ int runSelfTest()
     g_pass = 0;
     g_fail = 0;
 
-    say(QStringLiteral("===== bagwage 自检（①②③④）====="));
+    say(QStringLiteral("===== bagwage 自检（①②③④⑤）====="));
 
     QString error;
     QString usedPath = openSelfTestDb(&error);
@@ -1119,6 +1279,7 @@ int runSelfTest()
     testOrderUpdateAndRemove();
     testOrderTransactionRollback();
     testOrderPagination();
+    testWageSummary();
 
     DatabaseManager::close();
     QFile::remove(usedPath);

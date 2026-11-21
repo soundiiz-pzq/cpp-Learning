@@ -97,4 +97,40 @@ struct OrderDetailView
     double  amount = 0.0;
 };
 
+// ---- 工资核算 ----
+
+// 一条计件明细（已带上员工/工序/书包名和该书包的单价）
+struct WageDetailLine
+{
+    int     empId = 0;
+    QString empName;
+    int     processId = 0;
+    QString processName;
+    QString bagName;
+    QString workDate;
+    int     qty = 0;
+    double  unitPrice = 0.0;
+    bool    priced = false;   // false = 这款书包没给这道工序配单价
+};
+
+// 员工月度汇总（金额以「分」为单位，避免浮点误差）
+struct WageSummary
+{
+    int     empId = 0;
+    QString empName;
+    int     lineCount = 0;
+    int     totalQty = 0;
+    qint64  totalCents = 0;
+};
+
+// 员工某月的构成：按工序聚合
+struct WageBreakdown
+{
+    int     processId = 0;
+    QString processName;
+    int     totalQty = 0;
+    double  unitPrice = 0.0;
+    qint64  amountCents = 0;
+};
+
 #endif // MODELS_H

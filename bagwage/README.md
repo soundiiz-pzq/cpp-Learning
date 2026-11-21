@@ -2,9 +2,9 @@
 
 Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 
-> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+批量明细）、④（订单分页）已完成。**
-> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细、按订单维度分页与员工筛选。
-> 未完成：工资核算、图表、打包。
+> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+明细）、④（订单分页）、⑤（工资核算）已完成。**
+> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细、分页筛选、月度工资。
+> 未完成：图表、打包。
 
 ---
 
@@ -23,7 +23,8 @@ bagwage/
 │   ├── bagdao.*           书包（含「已配单价工序数」聚合）
 │   ├── bagprocessdao.*    书包×工序单价（按书包整组替换、按书包+工序查价）
 │   ├── orderdao.*         订单（列表带明细数/合计金额聚合）
-│   └── orderdetaildao.*   订单明细（含员工名/工序名/单价/小计的视图查询）
+│   ├── orderdetaildao.*   订单明细（含员工名/工序名/单价/小计的视图查询）
+│   └── wagedao.*          工资核算取数（按月拉明细，带书包单价与是否定价）
 ├── db/
 │   ├── dbmanager.*        连接 + 建表 + 索引 + 轻量迁移
 │   └── transaction.*      RAII 事务（析构自动回滚）
@@ -32,7 +33,8 @@ bagwage/
 │   ├── employeeservice.*
 │   ├── processservice.*
 │   ├── bagservice.*       书包 + 单价表（同一个事务）
-│   └── orderservice.*     订单 + 批量明细（单价必须存在，否则拒绝）
+│   ├── orderservice.*     订单 + 批量明细（单价必须存在，否则拒绝）
+│   └── wageservice.*      月度工资（按分累加、未定价单独暴露）
 └── ui/                    界面：只收集输入、弹窗、刷新表格
     ├── mainwindow.*
     ├── employeedialog.*
@@ -77,7 +79,9 @@ mingw32-make -j4
 **自检跑在临时库上**，跑完自动删除，绝不会往正式 `bagwage.db` 里插数据。
 默认用 `%TEMP%\bagwage_selftest_<pid>.db`；**如果临时目录里 SQLite 打不开库**
 （本机实测会报 `out of memory Error opening database`），会自动回退到程序目录建库、跑完删掉。
-当前共 97 项检查，期望最后一行 `===== 结果：PASS 97 / FAIL 0 =====`，退出码 0。
+当前共 113 项检查，期望最后一行 `===== 结果：PASS 113 / FAIL 0 =====`，退出码 0。
+
+`build.bat test` 会**先 qmake + mingw32-make，再跑自检**，不需要先手工 clean/build。
 
 想手工指定库文件路径（比如拿一份测试数据练手）：
 
@@ -106,11 +110,12 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 - 生成 32 位程序，不能链接 64 位库；
 - g++ 5.3 只到 C++14，**代码按 C++11 写**，别用 `std::optional`、`std::filesystem`、结构化绑定。
 
-### 4. QMessageBox 按钮中文靠 Qt 翻译文件
+### 4. QMessageBox 按钮中文要自己补一层
 
-`main.cpp` 启动时从 `QLibraryInfo::TranslationsPath` 加载 `qt_zh_CN.qm`，
-加载不到就静默跳过（按钮变回英文 Yes/No/OK）。
-所以**打包时别加 `--no-translations`**，否则 `translations\qt_zh_CN.qm` 不会被带上。
+Qt 自带的 `qt_zh_CN.qm` **不含** `QPlatformTheme` 上下文的标准按钮文案，
+只加载它的话确认框里还是英文 Yes/No。
+`main.cpp` 里额外装了一个 `StandardButtonTranslator` 覆盖「是/否/确定/取消/关闭」。
+**打包时别加 `--no-translations`**，否则连 `QMessageBox` 自己的中文也会丢。
 
 ### 5. 界面上「删除选中行」为什么不用表格的 currentRow
 
@@ -136,8 +141,9 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 | 订单 + 批量明细 | ✅ 事务写入；明细单价必须已配置 | `service/orderservice.cpp` |
 | 订单列表（含合计金额） | ✅ 合计取 `bag_process` 单价 | `dao/orderdao.cpp` |
 | **订单维度分页 + 员工筛选** | ✅ 一页 10 个订单，换页/筛选不重复不漏 | `dao/orderdao.cpp` |
-| 自检跑临时库 | ✅ 97 项（含界面回归） | `selftest.cpp` |
-| 工资 / 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
+| **月度工资核算** | ✅ 按分累加；缺单价单独列出、不计入总额 | `service/wageservice.cpp` |
+| 自检跑临时库 | ✅ 113 项（含界面回归） | `selftest.cpp` |
+| 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
 
 **工序删除的引用校验（阶段①重点）**：
 
@@ -167,24 +173,15 @@ PowerShell 的 `Set-Content -Encoding utf8` 在 5.1 会加 BOM，改 `.pro` 请�
 
 ---
 
-## 五、下一步（阶段⑤：月度工资核算）
+## 五、下一步（阶段⑥：月度统计图表）
 
-1. `dao/wagedao.*`：
-   ```sql
-   SELECT e.id, e.name, SUM(d.qty * bp.price) AS total
-   FROM order_detail d
-   JOIN employee e ON e.id = d.emp_id
-   JOIN orders o ON o.id = d.order_id
-   JOIN bag_process bp ON bp.bag_id = o.bag_id AND bp.process_id = d.process_id
-   WHERE substr(d.work_date, 1, 7) = ?
-   GROUP BY e.id ORDER BY total DESC
-   ```
-   单价只取 `bp.price`，`process.price` 只作参考。
-2. 缺单价必须显式暴露：`LEFT JOIN` 找出 `bp.id IS NULL` 的明细，界面单独列「未配置单价」，
-   **绝不能按 0 算进总额**。
-3. 金额按「分」计算（`llround(price*100)`），最后再除 100，避免 `0.1+0.2` 的浮点误差。
-4. 界面：选月份 → 员工汇总表；双击某员工看构成（工序、数量、单价、小计）。
-5. 空月份显示「本月无计件记录」，不是一张 0 元的表。
-6. 自检：写死一组数据手算对账；缺单价场景断言被单独列出且不计入总额。
+1. `ChartService` + `ChartWorker`（QThread）：
+   - 子线程里 `QSqlDatabase::addDatabase("QSQLITE", "chart_conn")` 自建连接，
+     用完先让 `QSqlQuery`/`QSqlDatabase` 析构，再 `removeDatabase`；
+   - 按月份聚合「各员工产量」和「各工序件数」，结果用信号回主线程。
+2. 主线程用 Qt Charts 画柱状图 + 饼图，`QT_CHARTS_USE_NAMESPACE` 不能漏。
+3. 切月份时带递增 `requestId`，结果回来比对后再画，避免连点导致画错月份。
+4. 空数据直接显示提示文字，不画空图、不对空容器取最大值。
+5. 自检：子线程聚合结果与主线程一致；空月份不崩。
 
-> 提示：月份用 `substr(work_date, 1, 7)` 比较 `'2026-11'`，前提是日期都存成 `yyyy-MM-dd`。
+> 提示：子线程里绝不能碰 `QChartView`；QString/QVector 这类已有元类型可以直接通过信号传。

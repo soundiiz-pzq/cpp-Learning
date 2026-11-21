@@ -8,6 +8,7 @@
 #include <QMainWindow>
 
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QTableWidget;
 class QTabWidget;
@@ -51,6 +52,11 @@ private slots:
     void goPrevOrderPage();
     void goNextOrderPage();
 
+    // 工资
+    void refreshWages();
+    void onWageMonthChanged();
+    void onWageSummarySelectionChanged();
+
 private:
     enum { kOrderPageSize = 10 };
 
@@ -58,6 +64,7 @@ private:
     QWidget *createProcessPage();
     QWidget *createBagPage();
     QWidget *createOrderPage();
+    QWidget *createWagePage();
     QWidget *makePlaceholderPage(const QString &title,
                                  const QString &summary,
                                  const QStringList &todo);
@@ -65,6 +72,8 @@ private:
     bool loadBagPriceMap(QList<Bag> *bags, QHash<int, QList<BagProcess> > *pricesByBag);
     void populateOrderEmployeeFilter();
     void updateOrderPageControls();
+    void loadWageMonth(const QString &month);
+    void loadWageBreakdown(int empId);
 
     int  currentEmployeeId() const;
     int  currentEmployeeRow() const;
@@ -102,6 +111,15 @@ private:
     int m_orderPage;        // 0 基
     int m_orderEmpFilter;   // 0 = 全部员工
     int m_orderTotal;
+
+    QComboBox    *m_wageMonthCombo;
+    QTableWidget *m_wageSummaryTable;
+    QTableWidget *m_wageBreakdownTable;
+    QTableWidget *m_wageUnpricedTable;
+    QGroupBox    *m_wageUnpricedGroup;
+    QLabel       *m_wageStatusLabel;
+    QLabel       *m_wageTotalLabel;
+    QLabel       *m_wageBreakdownTitle;
 };
 
 #endif // MAINWINDOW_H

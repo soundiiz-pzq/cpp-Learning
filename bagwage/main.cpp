@@ -10,19 +10,53 @@
 
 #include <cstdio>
 
+// Qt 自带的 qt_zh_CN.qm 只翻译了 QMessageBox 自己那部分文案，
+// 标准按钮（Yes/No/Cancel…）走的是 QPlatformTheme 这个上下文，而它没有中文。
+// 结果就是确认框里出现英文 Yes/No。这里补一层最小翻译，只覆盖标准按钮。
+class StandardButtonTranslator : public QTranslator
+{
+public:
+    QString translate(const char *context, const char *sourceText,
+                      const char *disambiguation = 0, int n = -1) const override
+    {
+        Q_UNUSED(disambiguation);
+        Q_UNUSED(n);
+        if (qstrcmp(context, "QPlatformTheme") != 0)
+            return QString();
+
+        const QString text = QString::fromUtf8(sourceText);
+        if (text == QLatin1String("Yes") || text == QLatin1String("&Yes"))
+            return QStringLiteral("是");
+        if (text == QLatin1String("No") || text == QLatin1String("&No"))
+            return QStringLiteral("否");
+        if (text == QLatin1String("OK"))
+            return QStringLiteral("确定");
+        if (text == QLatin1String("Cancel"))
+            return QStringLiteral("取消");
+        if (text == QLatin1String("Close"))
+            return QStringLiteral("关闭");
+        return QString();
+    }
+
+    bool isEmpty() const override { return false; }
+};
+
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("bagwage"));
     app.setOrganizationName(QStringLiteral("bagwage"));
 
-    // 加载 Qt 自带的中文翻译，让 QMessageBox 的 Yes/No/OK 显示成「是/否/确定」。
-    // 翻译文件不在时静默跳过，不影响运行（打包时别加 --no-translations）。
+    // 1) Qt 自带翻译：QMessageBox 自己的文案（如「确定」「取消」）
     QTranslator qtTranslator;
     if (qtTranslator.load(QLocale(), QStringLiteral("qt"), QStringLiteral("_"),
                           QLibraryInfo::location(QLibraryInfo::TranslationsPath))) {
         app.installTranslator(&qtTranslator);
     }
+
+    // 2) 补 QPlatformTheme 的标准按钮文案（后安装的优先级更高）
+    StandardButtonTranslator buttonTranslator;
+    app.installTranslator(&buttonTranslator);
 
     // 自检走临时库，绝不碰正式的 bagwage.db。
     // 必须在打开主库之前处理，否则连接会先建到正式库上。

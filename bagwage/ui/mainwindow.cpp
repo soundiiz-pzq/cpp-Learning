@@ -9,11 +9,13 @@
 #include "service/employeeservice.h"
 #include "service/orderservice.h"
 #include "service/processservice.h"
+#include "service/wageservice.h"
 
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -51,6 +53,14 @@ MainWindow::MainWindow(QWidget *parent)
     , m_orderPage(0)
     , m_orderEmpFilter(0)
     , m_orderTotal(0)
+    , m_wageMonthCombo(0)
+    , m_wageSummaryTable(0)
+    , m_wageBreakdownTable(0)
+    , m_wageUnpricedTable(0)
+    , m_wageUnpricedGroup(0)
+    , m_wageStatusLabel(0)
+    , m_wageTotalLabel(0)
+    , m_wageBreakdownTitle(0)
 {
     setWindowTitle(QStringLiteral("书包生产记账系统 — bagwage"));
     resize(1000, 640);
@@ -68,14 +78,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_tabs->addTab(createProcessPage(), QStringLiteral("工序"));
     m_tabs->addTab(createBagPage(), QStringLiteral("书包"));
     m_tabs->addTab(createOrderPage(), QStringLiteral("订单"));
-    m_tabs->addTab(makePlaceholderPage(
-                       QStringLiteral("工资核算"),
-                       QStringLiteral("工资 = Σ(明细数量 × <b>bag_process</b> 单价)，"
-                                      "按员工、按月份汇总。"),
-                       QStringList() << QStringLiteral("选择月份，汇总每个员工的计件工资")
-                                     << QStringLiteral("展开某员工查看构成（工序、数量、单价、小计）")
-                                     << QStringLiteral("空数据要有提示，不能显示 0 元误导"))
-                   , QStringLiteral("工资"));
+    m_tabs->addTab(createWagePage(), QStringLiteral("工资"));
     m_tabs->addTab(makePlaceholderPage(
                        QStringLiteral("月度统计图表"),
                        QStringLiteral("柱状图（各员工产量对比）+ 饼图（各工序占比）。"
@@ -97,6 +100,7 @@ MainWindow::MainWindow(QWidget *parent)
     refreshProcesses();
     refreshBags();
     refreshOrders();
+    refreshWages();
 }
 
 QWidget *MainWindow::createEmployeePage()
@@ -271,7 +275,8 @@ QWidget *MainWindow::createOrderPage()
 
     QLabel *hint = new QLabel(
         QStringLiteral("订单 = 某个楼层生产某款书包的数量；明细才是「谁做了哪道工序」的计件记录。"
-                       "列表按订单分页（每页 10 个订单），删除订单会连带删除它的全部明细。"),
+                       "列表按订单分页（每页 10 个订单），删除订单会连带删除它的全部明细。"
+                       "合计金额只算已配置单价的明细，缺价的会在「工资」页单独列出。"),
         page);
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color:#777;"));
@@ -309,6 +314,115 @@ QWidget *MainWindow::createOrderPage()
             this, SLOT(onOrderFilterChanged()));
 
     populateOrderEmployeeFilter();
+
+    return page;
+}
+
+QWidget *MainWindow::createWagePage()
+{
+    QWidget *page = new QWidget(this);
+
+    m_wageMonthCombo = new QComboBox(page);
+    QPushButton *refreshButton = new QPushButton(QStringLiteral("刷新"), page);
+    m_wageTotalLabel = new QLabel(page);
+    m_wageTotalLabel->setStyleSheet(QStringLiteral("font-weight:bold;"));
+    m_wageStatusLabel = new QLabel(page);
+    m_wageStatusLabel->setStyleSheet(QStringLiteral("color:#b45309;"));
+
+    QHBoxLayout *top = new QHBoxLayout;
+    top->addWidget(new QLabel(QStringLiteral("月份："), page));
+    top->addWidget(m_wageMonthCombo);
+    top->addWidget(refreshButton);
+    top->addSpacing(24);
+    top->addWidget(m_wageTotalLabel);
+    top->addSpacing(16);
+    top->addWidget(m_wageStatusLabel);
+    top->addStretch(1);
+
+    // 员工汇总
+    m_wageSummaryTable = new QTableWidget(page);
+    m_wageSummaryTable->setColumnCount(4);
+    m_wageSummaryTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("员工") << QStringLiteral("明细条数")
+                      << QStringLiteral("件数") << QStringLiteral("工资（元）"));
+    m_wageSummaryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_wageSummaryTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_wageSummaryTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_wageSummaryTable->verticalHeader()->setVisible(false);
+    m_wageSummaryTable->horizontalHeader()->setStretchLastSection(false);
+    m_wageSummaryTable->setColumnWidth(0, 110);
+    m_wageSummaryTable->setColumnWidth(1, 90);
+    m_wageSummaryTable->setColumnWidth(2, 80);
+    m_wageSummaryTable->setColumnWidth(3, 140);
+
+    QGroupBox *summaryGroup = new QGroupBox(QStringLiteral("员工月度计件工资"), page);
+    summaryGroup->setFixedWidth(460);
+    QVBoxLayout *summaryLayout = new QVBoxLayout(summaryGroup);
+    summaryLayout->addWidget(m_wageSummaryTable);
+
+    // 某个员工的构成
+    m_wageBreakdownTitle = new QLabel(QStringLiteral("（选择左侧员工查看构成）"), page);
+    m_wageBreakdownTitle->setStyleSheet(QStringLiteral("color:#555;"));
+
+    m_wageBreakdownTable = new QTableWidget(page);
+    m_wageBreakdownTable->setColumnCount(4);
+    m_wageBreakdownTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("工序") << QStringLiteral("数量")
+                      << QStringLiteral("单价（元）") << QStringLiteral("小计（元）"));
+    m_wageBreakdownTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_wageBreakdownTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_wageBreakdownTable->verticalHeader()->setVisible(false);
+    m_wageBreakdownTable->horizontalHeader()->setStretchLastSection(false);
+    m_wageBreakdownTable->setColumnWidth(0, 130);
+    m_wageBreakdownTable->setColumnWidth(1, 90);
+    m_wageBreakdownTable->setColumnWidth(2, 110);
+    m_wageBreakdownTable->setColumnWidth(3, 130);
+
+    QGroupBox *breakdownGroup = new QGroupBox(QStringLiteral("工资构成"), page);
+    QVBoxLayout *breakdownLayout = new QVBoxLayout(breakdownGroup);
+    breakdownLayout->addWidget(m_wageBreakdownTitle);
+    breakdownLayout->addWidget(m_wageBreakdownTable);
+
+    QHBoxLayout *middle = new QHBoxLayout;
+    middle->addWidget(summaryGroup);
+    middle->addWidget(breakdownGroup, 1);
+    // 未定价明细（默认隐藏）
+    m_wageUnpricedTable = new QTableWidget(page);
+    m_wageUnpricedTable->setColumnCount(5);
+    m_wageUnpricedTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("员工") << QStringLiteral("书包")
+                      << QStringLiteral("工序") << QStringLiteral("数量")
+                      << QStringLiteral("日期"));
+    m_wageUnpricedTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_wageUnpricedTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_wageUnpricedTable->verticalHeader()->setVisible(false);
+    m_wageUnpricedTable->horizontalHeader()->setStretchLastSection(true);
+    m_wageUnpricedTable->setColumnWidth(0, 120);
+    m_wageUnpricedTable->setColumnWidth(1, 200);
+    m_wageUnpricedTable->setColumnWidth(2, 120);
+    m_wageUnpricedTable->setColumnWidth(3, 80);
+
+    m_wageUnpricedGroup = new QGroupBox(QStringLiteral("未配置单价的明细（不计入总额）"), page);
+    QVBoxLayout *unpricedLayout = new QVBoxLayout(m_wageUnpricedGroup);
+    QLabel *unpricedHint = new QLabel(
+        QStringLiteral("这些明细所在的「书包 × 工序」没有单价，所以无法计算工资。"
+                       "请到「书包」页补齐单价后刷新。"), m_wageUnpricedGroup);
+    unpricedHint->setWordWrap(true);
+    unpricedHint->setStyleSheet(QStringLiteral("color:#b45309;"));
+    unpricedLayout->addWidget(unpricedHint);
+    unpricedLayout->addWidget(m_wageUnpricedTable);
+    m_wageUnpricedGroup->setVisible(false);
+
+    QVBoxLayout *layout = new QVBoxLayout(page);
+    layout->addLayout(top);
+    layout->addLayout(middle, 1);
+    layout->addWidget(m_wageUnpricedGroup);
+
+    connect(refreshButton, SIGNAL(clicked()), this, SLOT(refreshWages()));
+    connect(m_wageMonthCombo, SIGNAL(currentIndexChanged(int)),
+            this, SLOT(onWageMonthChanged()));
+    connect(m_wageSummaryTable, SIGNAL(itemSelectionChanged()),
+            this, SLOT(onWageSummarySelectionChanged()));
 
     return page;
 }
@@ -1038,4 +1152,172 @@ void MainWindow::removeOrder()
     // 订单删掉后，相关书包才可能重新可删
     refreshBags();
     statusBar()->showMessage(QStringLiteral("已删除订单 #%1").arg(orderId), 5000);
+}
+
+// ---------------------------------------------------------------- 工资
+
+void MainWindow::refreshWages()
+{
+    if (!m_wageMonthCombo)
+        return;
+
+    WageService service;
+    const QStringList months = service.months();
+    const QString keep = m_wageMonthCombo->currentData().toString();
+
+    {
+        QSignalBlocker blocker(m_wageMonthCombo);
+        m_wageMonthCombo->clear();
+        for (int i = 0; i < months.size(); ++i)
+            m_wageMonthCombo->addItem(months.at(i), months.at(i));
+
+        int index = m_wageMonthCombo->findData(keep);
+        if (index < 0 && !months.isEmpty())
+            index = 0;
+        m_wageMonthCombo->setCurrentIndex(index);
+    }
+
+    loadWageMonth(months.isEmpty() ? QString() : m_wageMonthCombo->currentData().toString());
+}
+
+void MainWindow::onWageMonthChanged()
+{
+    loadWageMonth(m_wageMonthCombo->currentData().toString());
+}
+
+void MainWindow::onWageSummarySelectionChanged()
+{
+    const int row = m_wageSummaryTable->currentRow();
+    if (row < 0)
+        return;
+
+    QTableWidgetItem *item = m_wageSummaryTable->item(row, 0);
+    if (item)
+        loadWageBreakdown(item->data(Qt::UserRole).toInt());
+}
+
+void MainWindow::loadWageMonth(const QString &month)
+{
+    m_wageSummaryTable->setRowCount(0);
+    m_wageBreakdownTable->setRowCount(0);
+    m_wageBreakdownTitle->setText(QStringLiteral("（选择左侧员工查看构成）"));
+    m_wageUnpricedTable->setRowCount(0);
+    m_wageUnpricedGroup->setVisible(false);
+    m_wageTotalLabel->clear();
+    m_wageStatusLabel->clear();
+
+    if (month.isEmpty()) {
+        m_wageStatusLabel->setText(QStringLiteral("还没有任何计件记录"));
+        return;
+    }
+
+    WageService service;
+    QList<WageDetailLine> unpriced;
+    const QList<WageSummary> summaries = service.monthlySummary(month, &unpriced);
+
+    qint64 totalCents = 0;
+    m_wageSummaryTable->setRowCount(summaries.size());
+    for (int row = 0; row < summaries.size(); ++row) {
+        const WageSummary &s = summaries.at(row);
+        totalCents += s.totalCents;
+
+        QTableWidgetItem *nameItem = new QTableWidgetItem(s.empName);
+        nameItem->setData(Qt::UserRole, s.empId);
+        m_wageSummaryTable->setItem(row, 0, nameItem);
+
+        QTableWidgetItem *linesItem = new QTableWidgetItem(QString::number(s.lineCount));
+        linesItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_wageSummaryTable->setItem(row, 1, linesItem);
+
+        QTableWidgetItem *qtyItem = new QTableWidgetItem(QString::number(s.totalQty));
+        qtyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_wageSummaryTable->setItem(row, 2, qtyItem);
+
+        QTableWidgetItem *moneyItem =
+            new QTableWidgetItem(WageService::formatCents(s.totalCents));
+        moneyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_wageSummaryTable->setItem(row, 3, moneyItem);
+    }
+
+    m_wageTotalLabel->setText(QStringLiteral("合计 %1 元 / %2 人")
+                                  .arg(WageService::formatCents(totalCents))
+                                  .arg(summaries.size()));
+
+    if (summaries.isEmpty()) {
+        m_wageStatusLabel->setText(unpriced.isEmpty()
+                                       ? QStringLiteral("本月无计件记录")
+                                       : QStringLiteral("本月没有已定价的计件记录"));
+    }
+
+    if (!unpriced.isEmpty()) {
+        m_wageUnpricedTable->setRowCount(unpriced.size());
+        for (int row = 0; row < unpriced.size(); ++row) {
+            const WageDetailLine &line = unpriced.at(row);
+            m_wageUnpricedTable->setItem(row, 0, new QTableWidgetItem(line.empName));
+            m_wageUnpricedTable->setItem(row, 1, new QTableWidgetItem(line.bagName));
+            m_wageUnpricedTable->setItem(row, 2, new QTableWidgetItem(line.processName));
+
+            QTableWidgetItem *qtyItem = new QTableWidgetItem(QString::number(line.qty));
+            qtyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            m_wageUnpricedTable->setItem(row, 3, qtyItem);
+
+            m_wageUnpricedTable->setItem(row, 4, new QTableWidgetItem(line.workDate));
+        }
+        m_wageUnpricedGroup->setTitle(
+            QStringLiteral("未配置单价的明细（%1 条，不计入总额）").arg(unpriced.size()));
+        m_wageUnpricedGroup->setVisible(true);
+    }
+
+    if (!summaries.isEmpty()) {
+        m_wageSummaryTable->selectRow(0);
+        loadWageBreakdown(summaries.first().empId);
+    }
+}
+
+void MainWindow::loadWageBreakdown(int empId)
+{
+    m_wageBreakdownTable->setRowCount(0);
+    if (empId <= 0)
+        return;
+
+    const QString month = m_wageMonthCombo->currentData().toString();
+    if (month.isEmpty())
+        return;
+
+    // 从汇总表里取员工名，用于标题
+    QString empName;
+    for (int row = 0; row < m_wageSummaryTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_wageSummaryTable->item(row, 0);
+        if (item && item->data(Qt::UserRole).toInt() == empId) {
+            empName = item->text();
+            break;
+        }
+    }
+
+    m_wageBreakdownTitle->setText(
+        QStringLiteral("构成：%1（%2）").arg(empName, month));
+
+    WageService service;
+    const QList<WageBreakdown> rows = service.breakdown(empId, month);
+
+    m_wageBreakdownTable->setRowCount(rows.size());
+    for (int i = 0; i < rows.size(); ++i) {
+        const WageBreakdown &b = rows.at(i);
+
+        m_wageBreakdownTable->setItem(i, 0, new QTableWidgetItem(b.processName));
+
+        QTableWidgetItem *qtyItem = new QTableWidgetItem(QString::number(b.totalQty));
+        qtyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_wageBreakdownTable->setItem(i, 1, qtyItem);
+
+        QTableWidgetItem *priceItem =
+            new QTableWidgetItem(QString::number(b.unitPrice, 'f', 2));
+        priceItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_wageBreakdownTable->setItem(i, 2, priceItem);
+
+        QTableWidgetItem *amountItem =
+            new QTableWidgetItem(WageService::formatCents(b.amountCents));
+        amountItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_wageBreakdownTable->setItem(i, 3, amountItem);
+    }
 }
