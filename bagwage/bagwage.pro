@@ -19,18 +19,31 @@ INCLUDEPATH += $$PWD
 
 SOURCES += \
     main.cpp \
+    selftest.cpp \
     db/dbmanager.cpp \
+    db/transaction.cpp \
+    dao/bagdao.cpp \
     dao/employeedao.cpp \
+    dao/processdao.cpp \
     service/employeeservice.cpp \
+    service/processservice.cpp \
     ui/mainwindow.cpp \
     ui/employeedialog.cpp \
+    ui/processdialog.cpp \
     ui/placeholderpage.cpp
 
 HEADERS += \
+    selftest.h \
     dao/models.h \
+    dao/bagdao.h \
     db/dbmanager.h \
+    db/transaction.h \
     dao/employeedao.h \
+    dao/processdao.h \
+    service/serviceresult.h \
     service/employeeservice.h \
+    service/processservice.h \
     ui/mainwindow.h \
     ui/employeedialog.h \
+    ui/processdialog.h \
     ui/placeholderpage.h

@@ -1,6 +1,5 @@
 #include "service/employeeservice.h"
 #include "dao/employeedao.h"
-
 QList<Employee> EmployeeService::listAll() const
 {
     EmployeeDao dao;

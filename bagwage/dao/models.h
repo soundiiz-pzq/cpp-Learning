@@ -4,8 +4,7 @@
 #include <QString>
 
 // 实体定义（纯数据，不含 SQL，不依赖 Qt Sql 模块）。
-// 需求清单里的 6 个实体都在这里；骨架阶段只用到 Employee，
-// 其余先留空结构体，写对应模块时按需补字段。
+// 需求清单里的 6 个实体都在这里。
 
 struct Employee
 {
@@ -42,6 +41,7 @@ struct Order
     int     bagId = 0;
     QString floor;
     int     qty = 0;
+    QString orderDate;   // 'yyyy-MM-dd'，留空表示未填
 };
 
 struct OrderDetail
@@ -52,6 +52,13 @@ struct OrderDetail
     int     processId = 0;
     int     qty = 0;
     QString workDate;   // 'yyyy-MM-dd'
+};
+
+// 引用校验时给用户看的「被谁引用」
+struct ReferenceInfo
+{
+    int     id = 0;
+    QString name;
 };
 
 #endif // MODELS_H

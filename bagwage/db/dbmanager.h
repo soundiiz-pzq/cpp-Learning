@@ -19,16 +19,17 @@ class DatabaseManager
 public:
     static const char *kMainConnection;
 
-    // 库文件放在程序同目录，换机器/交作业不用改路径
+    // 库文件默认放在程序同目录；可用环境变量 BAGWAGE_DB 覆盖（自检用临时库）。
     static QString databasePath();
+    static void    setDatabasePath(const QString &path);
 
     // 打开主连接；连接已存在时直接复用（重复打开不会报错）
     static bool open(QString *error = 0);
 
-    // 第一次打开时把 6 张表建好（幂等，可重复调用）
+    // 把 6 张表 + 索引建好（幂等，可重复调用）
     static bool ensureSchema(QString *error = 0);
 
-    // 已存在的表名（用于自检和界面展示）
+    // 已存在的表名（自检和界面展示用）
     static QStringList existingTables(QString *error = 0);
 
     static void close();

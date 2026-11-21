@@ -1,8 +1,10 @@
 #include "ui/mainwindow.h"
 #include "ui/employeedialog.h"
+#include "ui/processdialog.h"
 #include "ui/placeholderpage.h"
 #include "db/dbmanager.h"
 #include "service/employeeservice.h"
+#include "service/processservice.h"
 
 #include <QApplication>
 #include <QDir>
@@ -24,6 +26,11 @@ MainWindow::MainWindow(QWidget *parent)
     , m_tabs(new QTabWidget(this))
     , m_dbInfo(new QLabel(this))
     , m_employeeTable(new QTableWidget(this))
+    , m_editButton(0)
+    , m_removeButton(0)
+    , m_processTable(new QTableWidget(this))
+    , m_editProcessButton(0)
+    , m_removeProcessButton(0)
 {
     setWindowTitle(QStringLiteral("书包生产记账系统 — bagwage"));
     resize(1000, 640);
@@ -38,15 +45,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_dbInfo->setStyleSheet(QStringLiteral("color:#555; padding:4px;"));
 
     m_tabs->addTab(createEmployeePage(), QStringLiteral("员工"));
-    m_tabs->addTab(makePlaceholderPage(
-                       QStringLiteral("工序管理"),
-                       QStringLiteral("计件项目：每道工序一个通用单价。"
-                                      "注意真正算工资时用的是 <b>书包×工序</b> 的单价"
-                                      "（bag_process），不是这里的通用价。"),
-                       QStringList() << QStringLiteral("列表展示：工序名、单价")
-                                     << QStringLiteral("新增/编辑/删除对话框")
-                                     << QStringLiteral("删除前校验 bag_process / order_detail 引用"))
-                   , QStringLiteral("工序"));
+    m_tabs->addTab(createProcessPage(), QStringLiteral("工序"));
     m_tabs->addTab(makePlaceholderPage(
                        QStringLiteral("书包管理"),
                        QStringLiteral("产品本身只有名称；<b>单价是这个模块的重点</b>："
@@ -89,6 +88,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     statusBar()->showMessage(QStringLiteral("就绪"));
     refreshEmployees();
+    refreshProcesses();
 }
 
 QWidget *MainWindow::createEmployeePage()
@@ -129,12 +129,61 @@ QWidget *MainWindow::createEmployeePage()
     return page;
 }
 
+QWidget *MainWindow::createProcessPage()
+{
+    QWidget *page = new QWidget(this);
+
+    m_processTable->setColumnCount(3);
+    m_processTable->setHorizontalHeaderLabels(
+        QStringList() << QStringLiteral("ID") << QStringLiteral("工序名称")
+                      << QStringLiteral("通用单价（元/件）"));
+    m_processTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_processTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_processTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_processTable->verticalHeader()->setVisible(false);
+    m_processTable->horizontalHeader()->setStretchLastSection(true);
+    m_processTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_processTable->setColumnWidth(0, 60);
+
+    QPushButton *addButton = new QPushButton(QStringLiteral("新增"), page);
+    m_editProcessButton = new QPushButton(QStringLiteral("编辑"), page);
+    m_removeProcessButton = new QPushButton(QStringLiteral("删除"), page);
+    QPushButton *refreshButton = new QPushButton(QStringLiteral("刷新"), page);
+
+    QHBoxLayout *buttons = new QHBoxLayout;
+    buttons->addWidget(addButton);
+    buttons->addWidget(m_editProcessButton);
+    buttons->addWidget(m_removeProcessButton);
+    buttons->addWidget(refreshButton);
+    buttons->addStretch(1);
+
+    QLabel *hint = new QLabel(
+        QStringLiteral("提示：这里的「通用单价」只作参考。实际算工资用的是"
+                       "「书包 × 工序」单价（在书包页配置）。"), page);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:#777;"));
+
+    QVBoxLayout *layout = new QVBoxLayout(page);
+    layout->addLayout(buttons);
+    layout->addWidget(hint);
+    layout->addWidget(m_processTable, 1);
+
+    connect(addButton, SIGNAL(clicked()), this, SLOT(addProcess()));
+    connect(m_editProcessButton, SIGNAL(clicked()), this, SLOT(editProcess()));
+    connect(m_removeProcessButton, SIGNAL(clicked()), this, SLOT(removeProcess()));
+    connect(refreshButton, SIGNAL(clicked()), this, SLOT(refreshProcesses()));
+
+    return page;
+}
+
 QWidget *MainWindow::makePlaceholderPage(const QString &title,
                                          const QString &summary,
                                          const QStringList &todo)
 {
     return new PlaceholderPage(title, summary, todo, this);
 }
+
+// ---------------------------------------------------------------- 员工
 
 void MainWindow::refreshEmployees()
 {
@@ -211,7 +260,7 @@ void MainWindow::editEmployee()
 
     EmployeeService service;
     Employee current;
-    // 这里直接用列表里的数据，避免 UI 再反向依赖 DAO
+    // 直接用列表里的数据，避免 UI 再反向依赖 DAO
     QList<Employee> all = service.listAll();
     bool found = false;
     for (int i = 0; i < all.size(); ++i) {
@@ -271,4 +320,143 @@ void MainWindow::removeEmployee()
     }
     refreshEmployees();
     statusBar()->showMessage(QStringLiteral("已删除员工：%1").arg(name), 5000);
+}
+
+// ---------------------------------------------------------------- 工序
+
+void MainWindow::refreshProcesses()
+{
+    ProcessService service;
+    const QList<Process> processes = service.listAll();
+
+    m_processTable->setRowCount(0);
+    m_processTable->setRowCount(processes.size());
+    for (int row = 0; row < processes.size(); ++row) {
+        const Process &p = processes.at(row);
+
+        QTableWidgetItem *idItem = new QTableWidgetItem(QString::number(p.id));
+        idItem->setData(Qt::UserRole, p.id);
+        m_processTable->setItem(row, 0, idItem);
+
+        m_processTable->setItem(row, 1, new QTableWidgetItem(p.name));
+
+        QTableWidgetItem *priceItem =
+            new QTableWidgetItem(QString::number(p.price, 'f', 2));
+        priceItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_processTable->setItem(row, 2, priceItem);
+    }
+
+    if (m_processTable->rowCount() > 0 && currentProcessRow() < 0)
+        m_processTable->selectRow(0);
+
+    const bool hasRows = m_processTable->rowCount() > 0;
+    m_editProcessButton->setEnabled(hasRows);
+    m_removeProcessButton->setEnabled(hasRows);
+}
+
+int MainWindow::currentProcessRow() const
+{
+    const QList<QTableWidgetItem *> selected = m_processTable->selectedItems();
+    if (selected.isEmpty())
+        return -1;
+    return selected.first()->row();
+}
+
+int MainWindow::currentProcessId() const
+{
+    const int row = currentProcessRow();
+    if (row < 0)
+        return -1;
+    QTableWidgetItem *item = m_processTable->item(row, 0);
+    return item ? item->data(Qt::UserRole).toInt() : -1;
+}
+
+void MainWindow::addProcess()
+{
+    ProcessDialog dialog(this);
+    dialog.setProcess(Process());
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    Process p = dialog.process();
+    ProcessService service;
+    const ServiceResult result = service.save(&p);
+    if (!result.ok) {
+        showServiceFailure(result.message);
+        return;
+    }
+    refreshProcesses();
+    statusBar()->showMessage(QStringLiteral("已新增工序：%1").arg(p.name), 5000);
+}
+
+void MainWindow::editProcess()
+{
+    const int processId = currentProcessId();
+    if (processId < 0) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先在表格里选择一道工序"));
+        return;
+    }
+
+    ProcessService service;
+    Process current;
+    const QList<Process> all = service.listAll();
+    bool found = false;
+    for (int i = 0; i < all.size(); ++i) {
+        if (all.at(i).id == processId) {
+            current = all.at(i);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("该工序已不存在，请刷新后重试"));
+        refreshProcesses();
+        return;
+    }
+
+    ProcessDialog dialog(this);
+    dialog.setProcess(current);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    Process edited = dialog.process();
+    const ServiceResult result = service.save(&edited);
+    if (!result.ok) {
+        showServiceFailure(result.message);
+        return;
+    }
+    refreshProcesses();
+    statusBar()->showMessage(QStringLiteral("已保存工序：%1").arg(edited.name), 5000);
+}
+
+void MainWindow::removeProcess()
+{
+    const int processId = currentProcessId();
+    if (processId < 0) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先在表格里选择一道工序"));
+        return;
+    }
+
+    const int row = currentProcessRow();
+    const QString name = m_processTable->item(row, 1)->text();
+
+    const QMessageBox::StandardButton answer =
+        QMessageBox::question(this, QStringLiteral("确认删除"),
+                              QStringLiteral("确定要删除工序「%1」吗？").arg(name),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    ProcessService service;
+    const ServiceResult result = service.remove(processId);
+    if (!result.ok) {
+        showServiceFailure(result.message);
+        return;
+    }
+    refreshProcesses();
+    statusBar()->showMessage(QStringLiteral("已删除工序：%1").arg(name), 5000);
 }

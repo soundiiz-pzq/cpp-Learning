@@ -2,32 +2,9 @@
 #define EMPLOYEESERVICE_H
 
 #include "dao/models.h"
+#include "service/serviceresult.h"
 
 #include <QList>
-#include <QString>
-
-// Service 层的统一返回结果：成功/失败 + 给用户看的中文原因
-struct ServiceResult
-{
-    bool    ok;
-    QString message;
-
-    ServiceResult() : ok(false) {}
-
-    static ServiceResult success()
-    {
-        ServiceResult r;
-        r.ok = true;
-        return r;
-    }
-    static ServiceResult failure(const QString &msg)
-    {
-        ServiceResult r;
-        r.ok = false;
-        r.message = msg;
-        return r;
-    }
-};
 
 // 员工业务逻辑：负责「输入校验 + 引用校验」。
 // UI 只调用这一层，不直接碰 EmployeeDao。
@@ -46,4 +23,5 @@ public:
 private:
     static void normalize(Employee *emp);
 };
+
 #endif // EMPLOYEESERVICE_H
