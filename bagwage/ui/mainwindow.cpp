@@ -1,5 +1,6 @@
 #include "ui/mainwindow.h"
 #include "ui/bagdialog.h"
+#include "ui/chartpage.h"
 #include "ui/employeedialog.h"
 #include "ui/orderdialog.h"
 #include "ui/processdialog.h"
@@ -80,15 +81,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_tabs->addTab(createBagPage(), QStringLiteral("书包"));
     m_tabs->addTab(createOrderPage(), QStringLiteral("订单"));
     m_tabs->addTab(createWagePage(), QStringLiteral("工资"));
-    m_tabs->addTab(makePlaceholderPage(
-                       QStringLiteral("月度统计图表"),
-                       QStringLiteral("柱状图（各员工产量对比）+ 饼图（各工序占比）。"
-                                      "<b>聚合在子线程做</b>，算完用信号回主线程画图。"),
-                       QStringList() << QStringLiteral("子线程自建 SQLite 连接（不能复用 main）")
-                                     << QStringLiteral("按月份聚合各员工产量 / 各工序件数")
-                                     << QStringLiteral("空数据直接返回，不要对空容器取最大值")
-                                     << QStringLiteral("QChartView 放进本页"))
-                   , QStringLiteral("图表"));
+    m_tabs->addTab(new ChartPage(this), QStringLiteral("图表"));
 
     QWidget *central = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(central);

@@ -2,9 +2,9 @@
 
 Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 
-> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+明细）、④（订单分页）、⑤（工资核算）已完成。**
-> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细、分页筛选、月度工资。
-> 未完成：图表、打包。
+> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+明细）、④（订单分页）、⑤（工资核算）、⑥（图表）已完成。**
+> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细、分页筛选、月度工资、月度图表。
+> 未完成：打包。
 
 ---
 
@@ -34,13 +34,16 @@ bagwage/
 │   ├── processservice.*
 │   ├── bagservice.*       书包 + 单价表（同一个事务）
 │   ├── orderservice.*     订单 + 批量明细（单价必须存在，否则拒绝）
-│   └── wageservice.*      月度工资（按分累加、未定价单独暴露）
+│   ├── wageservice.*      月度工资（按分累加、未定价单独暴露）
+│   ├── monthcatalog.*     月份下拉候选（有记录的 ∪ 最近 12 个月）
+│   └── chartworker.*      图表聚合子线程（自建 SQLite 连接）
 └── ui/                    界面：只收集输入、弹窗、刷新表格
     ├── mainwindow.*
     ├── employeedialog.*
     ├── processdialog.*
     ├── bagdialog.*        书包名 + 单价表
     ├── orderdialog.*      订单头 + 明细表格
+    ├── chartpage.*        柱状图 + 饼图
     └── placeholderpage.*
 ```
 
@@ -79,7 +82,7 @@ mingw32-make -j4
 **自检跑在临时库上**，跑完自动删除，绝不会往正式 `bagwage.db` 里插数据。
 默认用 `%TEMP%\bagwage_selftest_<pid>.db`；**如果临时目录里 SQLite 打不开库**
 （本机实测会报 `out of memory Error opening database`），会自动回退到程序目录建库、跑完删掉。
-当前共 125 项检查，期望最后一行 `===== 结果：PASS 125 / FAIL 0 =====`，退出码 0。
+当前共 139 项检查，期望最后一行 `===== 结果：PASS 139 / FAIL 0 =====`，退出码 0。
 
 `build.bat test` 会**先 qmake + mingw32-make，再跑自检**，不需要先手工 clean/build。
 
@@ -92,7 +95,7 @@ $env:BAGWAGE_DB = "D:\test\demo.db"
 
 ---
 
-## 三、⚠️ 三个必须知道的坑
+## 三、⚠️ 几个必须知道的坑
 
 ### 1. PATH 里的 MSYS2 会抢 Qt 的 DLL
 
@@ -143,8 +146,8 @@ Qt 自带的 `qt_zh_CN.qm` **不含** `QPlatformTheme` 上下文的标准按钮�
 | **订单维度分页 + 员工筛选** | ✅ 一页 10 个订单，换页/筛选不重复不漏 | `dao/orderdao.cpp` |
 | **月度工资核算** | ✅ 按分累加；缺单价单独列出、不计入总额 | `service/wageservice.cpp` |
 | **月份下拉 + 空月份提示** | ✅ 有记录的月份 ∪ 最近 12 个月；空月份不显示「合计 0.00」 | `ui/mainwindow.cpp` |
-| 自检跑临时库 | ✅ 125 项（含界面回归） | `selftest.cpp` |
-| 图表 | ⬜ 占位页 | `ui/placeholderpage.cpp` |
+| **月度统计图表** | ✅ 子线程聚合 + 柱状图/饼图，过期结果丢弃 | `service/chartworker.cpp`、`ui/chartpage.cpp` |
+| 自检跑临时库 | ✅ 139 项（含界面与线程回归） | `selftest.cpp` |
 
 **工序删除的引用校验（阶段①重点）**：
 
@@ -180,17 +183,29 @@ Qt 自带的 `qt_zh_CN.qm` **不含** `QPlatformTheme` 上下文的标准按钮�
 - 汇总为空时**清空合计标签**，不显示「合计 0.00 元 / 0 人」——
   「没有记录」和「工资是 0」是两件事。
 
+**图表的四个关键点（阶段⑥）**：
+
+1. **子线程自建连接**：`ChartWorker` 在 `compute()` 里 `addDatabase("chart_conn_N")`，
+   先让 `QSqlQuery`、`QSqlDatabase` 依次离开作用域，再 `removeDatabase`，绝不借用主线程的 `"main"`。
+2. **过期结果直接丢弃**：每次请求自增 `requestId`，`dataReady` 回来先比对，
+   连点月份时只画最后一次。
+3. **空数据不画图**：两张图都为空时显示「该月没有计件记录」，不去碰空容器。
+4. **QChartView 的尺寸**：它继承 QGraphicsView，`sizeHint` 来自图表场景，会把页面撑得比窗口还宽/高。
+   处理办法是设 `QSizePolicy::Ignored` + 显式的最大宽高，两张图上下堆叠。
+
+> 注意：图表按**产量**统计，未配置单价的明细也算（活儿干了就是干了）；
+> 工资页才是按「已定价」口径算钱，两者不一致是预期的。
+
 ---
 
-## 五、下一步（阶段⑥：月度统计图表）
+## 五、下一步（阶段⑦：打包）
 
-1. `ChartService` + `ChartWorker`（QThread）：
-   - 子线程里 `QSqlDatabase::addDatabase("QSQLITE", "chart_conn")` 自建连接，
-     用完先让 `QSqlQuery`/`QSqlDatabase` 析构，再 `removeDatabase`；
-   - 按月份聚合「各员工产量」和「各工序件数」，结果用信号回主线程。
-2. 主线程用 Qt Charts 画柱状图 + 饼图，`QT_CHARTS_USE_NAMESPACE` 不能漏。
-3. 切月份时带递增 `requestId`，结果回来比对后再画，避免连点导致画错月份。
-4. 空数据直接显示提示文字，不画空图、不对空容器取最大值。
-5. 自检：子线程聚合结果与主线程一致；空月份不崩。
+1. Release 构建 → `windeployqt --release bagwage.exe`（**别加 `--no-translations`**）。
+2. 检查目录里必须有：`platforms\qwindows.dll`、`sqldrivers\qsqlite.dll`、
+   `Qt5Core/Gui/Widgets/Sql/Charts.dll`、MinGW 运行时（`libgcc_s_dw2-1.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll`）。
+   少了 `sqldrivers\qsqlite.dll` 就是「打开数据库失败」。
+3. `.pro` 里的 `CONFIG += console` 会让 GUI 带黑框；打包前做一份去掉 console 的 release 配置。
+4. 数据库写在 exe 同目录，拷到只读目录（Program Files）会写不进去；交作业「整个文件夹拷走」没问题。
+5. 在没装 Qt 的电脑/虚拟机上双击验证；32 位程序不能混进 64 位 DLL。
 
-> 提示：子线程里绝不能碰 `QChartView`；QString/QVector 这类已有元类型可以直接通过信号传。
+> 提示：本机 `PATH` 里的 msys64 带 64 位 Qt6，打包验证时不要把 msys64 的 bin 加进 PATH。

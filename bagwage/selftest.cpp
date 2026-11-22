@@ -5,17 +5,22 @@
 #include "dao/models.h"
 #include "dao/processdao.h"
 #include "service/bagservice.h"
+#include "service/chartworker.h"
 #include "service/employeeservice.h"
+#include "service/monthcatalog.h"
 #include "service/orderservice.h"
 #include "service/processservice.h"
 #include "service/wageservice.h"
 #include "ui/bagdialog.h"
+#include "ui/chartpage.h"
 #include "ui/mainwindow.h"
 
 #include <QApplication>
 #include <QComboBox>
 #include <QDate>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFocusEvent>
 #include <QLabel>
 #include <QTableWidget>
@@ -1308,6 +1313,114 @@ void testWageMonthSelectorAndEmptyState()
     }
 }
 
+// 图表：子线程聚合 + 过期结果丢弃
+void testChartAggregation()
+{
+    ChartWorker sync(QStringLiteral("2025-03"), 7);
+    const ChartData data = sync.compute();
+
+    check(data.ok, QStringLiteral("图表聚合执行成功"));
+    check(data.month == QStringLiteral("2025-03") && data.requestId == 7,
+          QStringLiteral("回传的月份和 requestId 正确"));
+
+    int w1 = -1;
+    int w2 = -1;
+    for (int i = 0; i < data.employees.size(); ++i) {
+        if (data.employees.at(i).label == QStringLiteral("工资甲"))
+            w1 = data.employees.at(i).qty;
+        if (data.employees.at(i).label == QStringLiteral("工资乙"))
+            w2 = data.employees.at(i).qty;
+    }
+    check(w1 == 110, QStringLiteral("员工甲产量 = 60 + 50 = %1").arg(w1));
+    check(w2 == 47, QStringLiteral("员工乙产量 = 40 + 7（未定价也算产量）= %1").arg(w2));
+
+    int p1 = -1;
+    int p2 = -1;
+    for (int i = 0; i < data.processes.size(); ++i) {
+        if (data.processes.at(i).label == QStringLiteral("工资工序甲"))
+            p1 = data.processes.at(i).qty;
+        if (data.processes.at(i).label == QStringLiteral("工资工序乙"))
+            p2 = data.processes.at(i).qty;
+    }
+    check(p1 == 60, QStringLiteral("工序甲件数 = %1").arg(p1));
+    check(p2 == 97, QStringLiteral("工序乙件数 = 50 + 40 + 7 = %1").arg(p2));
+
+    // 空月份不能崩，返回空列表
+    ChartWorker empty(QStringLiteral("2021-07"), 8);
+    const ChartData emptyData = empty.compute();
+    check(emptyData.ok && emptyData.employees.isEmpty() && emptyData.processes.isEmpty(),
+          QStringLiteral("空月份返回空数据而不是脏数据"));
+
+    // 真线程跑一遍，结果要和同步计算一致
+    ChartWorker threaded(QStringLiteral("2025-03"), 9);
+    ChartData got;
+    QObject::connect(&threaded, &ChartWorker::dataReady, &threaded,
+                     [&got](const ChartData &d) { got = d; }, Qt::DirectConnection);
+    threaded.start();
+    const bool finished = threaded.wait(8000);
+    check(finished, QStringLiteral("统计线程在 8 秒内结束"));
+    check(got.ok && got.requestId == 9 && got.employees.size() == data.employees.size()
+              && got.processes.size() == data.processes.size(),
+          QStringLiteral("子线程聚合结果与同步计算一致"));
+}
+
+// 图表页 UI：默认月份能出图；空月份显示提示且不画图
+void testChartPage()
+{
+    ChartPage page;
+    QLabel *status = page.findChild<QLabel *>(QStringLiteral("chartStatusLabel"));
+    QLabel *empty = page.findChild<QLabel *>(QStringLiteral("chartEmptyLabel"));
+    QComboBox *combo = page.findChild<QComboBox *>(QStringLiteral("chartMonthCombo"));
+    check(status && empty && combo, QStringLiteral("图表页控件就绪"));
+    if (!status || !empty || !combo)
+        return;
+
+    // 等子线程结果回到主线程
+    bool ready = false;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 8000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        if (status->text().contains(QStringLiteral("统计完成"))
+            || !empty->text().isEmpty()) {
+            ready = true;
+            break;
+        }
+        QThread::msleep(10);
+    }
+    check(ready, QStringLiteral("图表页默认月份统计完成"));
+    check(status->text().contains(QStringLiteral("统计完成")),
+          QStringLiteral("默认月份出图（状态：%1）").arg(status->text()));
+
+    // 找一个没有数据的月份
+    const QStringList withData = MonthCatalog::withRecords();
+    QString emptyMonth;
+    for (int i = 0; i < combo->count(); ++i) {
+        const QString m = combo->itemData(i).toString();
+        if (!withData.contains(m)) {
+            emptyMonth = m;
+            break;
+        }
+    }
+    check(!emptyMonth.isEmpty(), QStringLiteral("图表页下拉里有空月份"));
+    if (emptyMonth.isEmpty())
+        return;
+
+    combo->setCurrentIndex(combo->findData(emptyMonth));
+
+    bool emptyShown = false;
+    timer.restart();
+    while (timer.elapsed() < 8000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        if (empty->text().contains(QStringLiteral("没有计件记录"))) {
+            emptyShown = true;
+            break;
+        }
+        QThread::msleep(10);
+    }
+    check(emptyShown, QStringLiteral("空月份显示「该月没有计件记录」"));
+}
+
 } // namespace
 
 int runSelfTest()
@@ -1350,6 +1463,8 @@ int runSelfTest()
     testOrderPagination();
     testWageSummary();
     testWageMonthSelectorAndEmptyState();
+    testChartAggregation();
+    testChartPage();
 
     DatabaseManager::close();
     QFile::remove(usedPath);

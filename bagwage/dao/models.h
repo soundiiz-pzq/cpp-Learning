@@ -1,7 +1,9 @@
 #ifndef MODELS_H
 #define MODELS_H
 
+#include <QMetaType>
 #include <QString>
+#include <QList>
 
 // 实体定义（纯数据，不含 SQL，不依赖 Qt Sql 模块）。
 // 需求清单里的 6 个实体都在这里。
@@ -132,5 +134,34 @@ struct WageBreakdown
     double  unitPrice = 0.0;
     qint64  amountCents = 0;
 };
+
+// ---- 月度统计图表 ----
+
+// 柱状图的一根（某员工的产量）
+struct ChartBar
+{
+    QString label;
+    int     qty = 0;
+};
+
+// 饼图的一片（某工序的件数占比）
+struct ChartSlice
+{
+    QString label;
+    int     qty = 0;
+};
+
+// 子线程算完一次性回传的结果
+struct ChartData
+{
+    QString month;
+    int     requestId = -1;   // 用来丢弃过期的结果
+    QList<ChartBar>   employees;
+    QList<ChartSlice> processes;
+    bool    ok = false;
+    QString error;
+};
+
+Q_DECLARE_METATYPE(ChartData)
 
 #endif // MODELS_H

@@ -30,12 +30,15 @@ SOURCES += \
     dao/processdao.cpp \
     dao/wagedao.cpp \
     service/bagservice.cpp \
+    service/chartworker.cpp \
     service/employeeservice.cpp \
+    service/monthcatalog.cpp \
     service/orderservice.cpp \
     service/processservice.cpp \
     service/wageservice.cpp \
     ui/mainwindow.cpp \
     ui/bagdialog.cpp \
+    ui/chartpage.cpp \
     ui/employeedialog.cpp \
     ui/orderdialog.cpp \
     ui/processdialog.cpp \
@@ -55,12 +58,15 @@ HEADERS += \
     dao/wagedao.h \
     service/serviceresult.h \
     service/bagservice.h \
+    service/chartworker.h \
     service/employeeservice.h \
+    service/monthcatalog.h \
     service/orderservice.h \
     service/processservice.h \
     service/wageservice.h \
     ui/mainwindow.h \
     ui/bagdialog.h \
+    ui/chartpage.h \
     ui/employeedialog.h \
     ui/orderdialog.h \
     ui/processdialog.h \
