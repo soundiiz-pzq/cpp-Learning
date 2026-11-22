@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDate>
 #include <QDir>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -323,10 +324,13 @@ QWidget *MainWindow::createWagePage()
     QWidget *page = new QWidget(this);
 
     m_wageMonthCombo = new QComboBox(page);
+    m_wageMonthCombo->setObjectName(QStringLiteral("wageMonthCombo"));
     QPushButton *refreshButton = new QPushButton(QStringLiteral("刷新"), page);
     m_wageTotalLabel = new QLabel(page);
+    m_wageTotalLabel->setObjectName(QStringLiteral("wageTotalLabel"));
     m_wageTotalLabel->setStyleSheet(QStringLiteral("font-weight:bold;"));
     m_wageStatusLabel = new QLabel(page);
+    m_wageStatusLabel->setObjectName(QStringLiteral("wageStatusLabel"));
     m_wageStatusLabel->setStyleSheet(QStringLiteral("color:#b45309;"));
 
     QHBoxLayout *top = new QHBoxLayout;
@@ -1162,22 +1166,30 @@ void MainWindow::refreshWages()
         return;
 
     WageService service;
-    const QStringList months = service.months();
+    const QStringList withData = service.months();
+    // 下拉 = 有记录的月份 ∪ 最近 12 个月，否则没数据的月份永远选不到
+    const QStringList options = service.selectableMonths(12);
     const QString keep = m_wageMonthCombo->currentData().toString();
+
+    QString target = keep;
+    if (target.isEmpty() || !options.contains(target)) {
+        // 首次打开优先落在「最近一个真的有数据的月份」，没有数据才用本月
+        target = withData.isEmpty()
+            ? QDate::currentDate().toString(QStringLiteral("yyyy-MM"))
+            : withData.first();
+    }
 
     {
         QSignalBlocker blocker(m_wageMonthCombo);
         m_wageMonthCombo->clear();
-        for (int i = 0; i < months.size(); ++i)
-            m_wageMonthCombo->addItem(months.at(i), months.at(i));
+        for (int i = 0; i < options.size(); ++i)
+            m_wageMonthCombo->addItem(options.at(i), options.at(i));
 
-        int index = m_wageMonthCombo->findData(keep);
-        if (index < 0 && !months.isEmpty())
-            index = 0;
-        m_wageMonthCombo->setCurrentIndex(index);
+        const int index = m_wageMonthCombo->findData(target);
+        m_wageMonthCombo->setCurrentIndex(index >= 0 ? index : 0);
     }
 
-    loadWageMonth(months.isEmpty() ? QString() : m_wageMonthCombo->currentData().toString());
+    loadWageMonth(m_wageMonthCombo->currentData().toString());
 }
 
 void MainWindow::onWageMonthChanged()
@@ -1239,14 +1251,17 @@ void MainWindow::loadWageMonth(const QString &month)
         m_wageSummaryTable->setItem(row, 3, moneyItem);
     }
 
-    m_wageTotalLabel->setText(QStringLiteral("合计 %1 元 / %2 人")
-                                  .arg(WageService::formatCents(totalCents))
-                                  .arg(summaries.size()));
-
     if (summaries.isEmpty()) {
+        // 没有任何可计入的工资时不能显示「合计 0.00 元 / 0 人」，
+        // 那会被读成「这个月工资是 0」，和「没有记录」是两件事
+        m_wageTotalLabel->clear();
         m_wageStatusLabel->setText(unpriced.isEmpty()
                                        ? QStringLiteral("本月无计件记录")
                                        : QStringLiteral("本月没有已定价的计件记录"));
+    } else {
+        m_wageTotalLabel->setText(QStringLiteral("合计 %1 元 / %2 人")
+                                      .arg(WageService::formatCents(totalCents))
+                                      .arg(summaries.size()));
     }
 
     if (!unpriced.isEmpty()) {

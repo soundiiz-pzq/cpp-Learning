@@ -10,11 +10,14 @@
 #include "service/processservice.h"
 #include "service/wageservice.h"
 #include "ui/bagdialog.h"
+#include "ui/mainwindow.h"
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDate>
 #include <QDoubleSpinBox>
 #include <QFocusEvent>
+#include <QLabel>
 #include <QTableWidget>
 
 #include <QCoreApplication>
@@ -1239,6 +1242,72 @@ void testWageSummary()
           QStringLiteral("浮点单价按分取整（0.1×3=30 分，0.29=29 分）"));
 }
 
+// 回归：空月份必须能从下拉里选到，且不显示「合计 0.00 元」
+void testWageMonthSelectorAndEmptyState()
+{
+    WageService service;
+    const QDate today = QDate::currentDate();
+    const QString current = today.toString(QStringLiteral("yyyy-MM"));
+    const QString elevenAgo = today.addMonths(-11).toString(QStringLiteral("yyyy-MM"));
+
+    const QStringList options = service.selectableMonths(12);
+    check(options.contains(current), QStringLiteral("月份下拉包含本月 %1").arg(current));
+    check(options.contains(elevenAgo), QStringLiteral("月份下拉包含 11 个月前 %1").arg(elevenAgo));
+    check(options.size() >= 12, QStringLiteral("月份下拉至少 12 项（实际 %1）").arg(options.size()));
+    check(options.contains(QStringLiteral("2025-03")),
+          QStringLiteral("月份下拉也包含库里有记录的 2025-03"));
+
+    bool descending = true;
+    for (int i = 1; i < options.size(); ++i) {
+        if (options.at(i - 1) <= options.at(i))
+            descending = false;
+    }
+    check(descending, QStringLiteral("月份下拉按时间倒序（第一个是 %1）")
+                          .arg(options.isEmpty() ? QString() : options.first()));
+
+    // UI 回归：选一个没有数据的月份
+    MainWindow window;
+    QComboBox *combo = window.findChild<QComboBox *>(QStringLiteral("wageMonthCombo"));
+    QLabel *total = window.findChild<QLabel *>(QStringLiteral("wageTotalLabel"));
+    QLabel *status = window.findChild<QLabel *>(QStringLiteral("wageStatusLabel"));
+    check(combo && total && status, QStringLiteral("工资页控件就绪"));
+    if (!combo || !total || !status)
+        return;
+
+    const QStringList withData = service.months();
+    QString emptyMonth;
+    for (int i = 0; i < options.size(); ++i) {
+        if (!withData.contains(options.at(i))) {
+            emptyMonth = options.at(i);
+            break;
+        }
+    }
+    check(!emptyMonth.isEmpty(), QStringLiteral("下拉里存在没有数据的月份"));
+    if (emptyMonth.isEmpty())
+        return;
+
+    const int index = combo->findData(emptyMonth);
+    check(index >= 0, QStringLiteral("空月份 %1 在下拉里可选").arg(emptyMonth));
+    if (index < 0)
+        return;
+
+    combo->setCurrentIndex(index);
+
+    check(status->text().contains(QStringLiteral("无计件记录")),
+          QStringLiteral("空月份提示「本月无计件记录」（实际：%1）").arg(status->text()));
+    check(total->text().isEmpty(),
+          QStringLiteral("空月份不显示「合计 0.00」（实际：%1）").arg(total->text()));
+
+    // 切回有数据的月份，合计要恢复
+    const int dataIndex = combo->findData(QStringLiteral("2025-03"));
+    if (dataIndex >= 0) {
+        combo->setCurrentIndex(dataIndex);
+        check(!total->text().isEmpty() && total->text().contains(QStringLiteral("合计")),
+              QStringLiteral("切回有数据的月份后合计恢复（实际：%1）").arg(total->text()));
+        check(status->text().isEmpty(), QStringLiteral("有数据的月份不显示空提示"));
+    }
+}
+
 } // namespace
 
 int runSelfTest()
@@ -1280,6 +1349,7 @@ int runSelfTest()
     testOrderTransactionRollback();
     testOrderPagination();
     testWageSummary();
+    testWageMonthSelectorAndEmptyState();
 
     DatabaseManager::close();
     QFile::remove(usedPath);

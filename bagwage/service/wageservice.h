@@ -19,7 +19,13 @@
 class WageService
 {
 public:
+    // 有计件记录的月份（倒序）
     QStringList months() const;
+
+    // 下拉框可选的月份：库里有记录的月份 ∪ 最近 recentMonths 个月（含本月），倒序。
+    // 只给「有数据的月份」的话，没数据的月份永远选不到，
+    // 「本月无计件记录」这句提示也就永远看不到。
+    QStringList selectableMonths(int recentMonths = 12) const;
 
     QList<WageSummary> monthlySummary(const QString &month,
                                       QList<WageDetailLine> *unpriced) const;

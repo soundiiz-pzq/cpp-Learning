@@ -1,7 +1,9 @@
 #include "service/wageservice.h"
 #include "dao/wagedao.h"
 
+#include <QDate>
 #include <QHash>
+#include <QSet>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -21,6 +23,25 @@ QStringList WageService::months() const
 {
     WageDao dao;
     return dao.months();
+}
+
+QStringList WageService::selectableMonths(int recentMonths) const
+{
+    QSet<QString> merged;
+    const QStringList withData = months();
+    for (int i = 0; i < withData.size(); ++i)
+        merged.insert(withData.at(i));
+
+    if (recentMonths > 0) {
+        const QDate today = QDate::currentDate();
+        for (int i = 0; i < recentMonths; ++i)
+            merged.insert(today.addMonths(-i).toString(QStringLiteral("yyyy-MM")));
+    }
+
+    QStringList result = merged.toList();
+    std::sort(result.begin(), result.end());
+    std::reverse(result.begin(), result.end());   // 'yyyy-MM' 倒序即时间倒序
+    return result;
 }
 
 qint64 WageService::centsOf(int qty, double unitPrice)
