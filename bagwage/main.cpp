@@ -3,6 +3,7 @@
 #include "ui/mainwindow.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QLibraryInfo>
 #include <QLocale>
 #include <QStringList>
@@ -48,10 +49,17 @@ int main(int argc, char *argv[])
     app.setOrganizationName(QStringLiteral("bagwage"));
 
     // 1) Qt 自带翻译：QMessageBox 自己的文案（如「确定」「取消」）
+    //    先找程序目录下的 translations（打包后就是它），再退回 Qt 安装目录（开发机）
     QTranslator qtTranslator;
-    if (qtTranslator.load(QLocale(), QStringLiteral("qt"), QStringLiteral("_"),
-                          QLibraryInfo::location(QLibraryInfo::TranslationsPath))) {
-        app.installTranslator(&qtTranslator);
+    const QStringList translationDirs = QStringList()
+        << QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("translations"))
+        << QLibraryInfo::location(QLibraryInfo::TranslationsPath);
+    for (int i = 0; i < translationDirs.size(); ++i) {
+        if (qtTranslator.load(QLocale(), QStringLiteral("qt"), QStringLiteral("_"),
+                              translationDirs.at(i))) {
+            app.installTranslator(&qtTranslator);
+            break;
+        }
     }
 
     // 2) 补 QPlatformTheme 的标准按钮文案（后安装的优先级更高）

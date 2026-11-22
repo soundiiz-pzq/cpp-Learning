@@ -2,9 +2,9 @@
 
 Qt 5.9.1 / MinGW 5.3（32 位）/ qmake / SQLite。
 
-> **当前进度：阶段①（工序）、②（书包+单价表）、③（订单+明细）、④（订单分页）、⑤（工资核算）、⑥（图表）已完成。**
-> 已完成：数据库层、公共件、员工、工序、书包+单价表、订单+明细、分页筛选、月度工资、月度图表。
-> 未完成：打包。
+> **当前进度：七个阶段全部完成。**
+> 功能：员工、工序、书包+单价表、订单+批量明细、订单分页与员工筛选、月度工资核算、月度统计图表。
+> 打包：`package.bat` 一键生成可独立运行的程序目录。
 
 ---
 
@@ -198,14 +198,37 @@ Qt 自带的 `qt_zh_CN.qm` **不含** `QPlatformTheme` 上下文的标准按钮�
 
 ---
 
-## 五、下一步（阶段⑦：打包）
+## 五、打包（已完成）
 
-1. Release 构建 → `windeployqt --release bagwage.exe`（**别加 `--no-translations`**）。
-2. 检查目录里必须有：`platforms\qwindows.dll`、`sqldrivers\qsqlite.dll`、
-   `Qt5Core/Gui/Widgets/Sql/Charts.dll`、MinGW 运行时（`libgcc_s_dw2-1.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll`）。
-   少了 `sqldrivers\qsqlite.dll` 就是「打开数据库失败」。
-3. `.pro` 里的 `CONFIG += console` 会让 GUI 带黑框；打包前做一份去掉 console 的 release 配置。
-4. 数据库写在 exe 同目录，拷到只读目录（Program Files）会写不进去；交作业「整个文件夹拷走」没问题。
-5. 在没装 Qt 的电脑/虚拟机上双击验证；32 位程序不能混进 64 位 DLL。
+双击或在命令行运行：
 
-> 提示：本机 `PATH` 里的 msys64 带 64 位 Qt6，打包验证时不要把 msys64 的 bin 加进 PATH。
+```powershell
+cd C:\Users\PYH\Desktop\cpp\bagwage
+package.bat
+```
+
+产物在 **`C:\Users\PYH\Desktop\bagwage-dist`**（27 个文件，约 33 MB）。
+把这个文件夹整个拷到别的电脑，双击 `bagwage.exe` 即可运行，不需要装 Qt。
+
+`package.bat` 做了四件事：
+
+1. `qmake "CONFIG+=package"` + `mingw32-make`：package 配置**不带 console**，
+   产物是 `Windows GUI` 子系统（没有黑框）；日常 `build.bat` 仍带 console，方便看 `--selftest` 输出。
+2. `windeployqt --release --compiler-runtime`：带上 Qt5 各 DLL、`platforms\qwindows.dll`、
+   `sqldrivers\qsqlite.dll` 和 MinGW 运行时。
+3. **补 `translations\qt_zh_CN.qm`**：`windeployqt` 在 Qt 5.9.1 上不会带中文翻译，
+   不补的话确认框按钮会变回英文。
+4. 删掉用不到的 `qsqlmysql / qsqlodbc / qsqlpsql` 驱动，只留 SQLite。
+
+**已验证**：
+
+- `bagwage.exe` 的子系统是 `Windows GUI`（开发版是 `Windows CUI`）；
+- 在只保留 `C:\Windows\System32` 的 PATH 下能正常启动、建库、开窗口；
+- `objdump` 检查直接依赖，所有非系统 DLL 都在包内，`qwindows.dll` / `qsqlite.dll` 的依赖也齐全；
+- 打包版弹确认框显示的是「是 / 否」。
+
+**注意**：
+
+- 数据库 `bagwage.db` 生成在 **exe 同目录**，所以整个文件夹要可写；放到 `Program Files` 会写不进去。
+- 32 位程序，不能混进 64 位 DLL；验证时别把 `C:\msys64\mingw64\bin` 加进 PATH。
+- 想清空数据重新演示：关掉程序，删掉目录里的 `bagwage.db`，再打开会自动重建空库。

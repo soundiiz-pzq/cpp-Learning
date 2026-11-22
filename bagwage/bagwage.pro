@@ -7,8 +7,12 @@
 
 QT += core gui widgets sql charts
 
-CONFIG += c++11 console release
+CONFIG += c++11 release
 CONFIG -= app_bundle debug_and_release
+
+# 开发构建带控制台，方便看 --selftest 的输出；
+# 打包时用 qmake "CONFIG+=package" 去掉黑框（GUI 程序不要控制台）
+!contains(CONFIG, package): CONFIG += console
 
 TEMPLATE = app
 TARGET   = bagwage

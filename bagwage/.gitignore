@@ -33,3 +33,6 @@ result.log
 debug/
 release/
 build-*/
+
+# ===== 打包中间目录 =====
+.package-build/
