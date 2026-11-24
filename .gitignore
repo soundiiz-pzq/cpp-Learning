@@ -1,0 +1,32 @@
+# ===== 编译产物 =====
+*.exe
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+# ===== 备份 / 临时文件 =====
+*.bak
+*.bak-*
+*.orig
+*.rej
+*~
+
+# ===== 密钥与凭据：绝不提交 =====
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.npmrc
+.pypirc
+secrets.*
+credentials.*
+config.local.*
+
+# ===== 打包中间目录 =====
+.package-build/
